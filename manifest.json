@@ -95,10 +95,7 @@
       "description": "New Tab"
     },
     "copyCurrentUrl": {
-      "description": "Copy current tab URL",
-      "suggested_key": {
-        "default": "Alt+C"
-      }
+      "description": "Copy current tab URL (set a shortcut in the browser to use this)"
     }
   },
   "options_page": "options.html"
