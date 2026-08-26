@@ -33,17 +33,19 @@
     // How close to the left edge the pointer must get to summon the panel.
     const EDGE_TRIGGER_PX = 6;
     // Once open, the pointer has to leave this band before it hides again.
-    const PANEL_REGION_PX = 232;
-    const CHROME_GROUP_COLORS = {
-        grey: '#9aa0a6',
-        blue: '#8ab4f8',
-        red: '#f28b82',
-        yellow: '#fdd663',
-        green: '#81c995',
-        pink: '#ff8bcb',
-        purple: '#d7aefb',
-        cyan: '#78d9ec',
-        orange: '#fcad70'
+    const PANEL_REGION_PX = 248;
+    // Arcify's own palette from styles.css, not Chrome's tab-group colours - the point is
+    // for the rail to look like the side panel it stands in for.
+    const SPACE_COLORS = {
+        grey: '#cccccc',
+        blue: '#8bb3f3',
+        red: '#ff9e97',
+        yellow: '#ffe29f',
+        green: '#8bda99',
+        pink: '#fbaad7',
+        purple: '#d6a6ff',
+        cyan: '#a5e2ea',
+        orange: '#ffc48b'
     };
 
     let state = { spaces: [], tabs: [], pinned: [] };
@@ -75,34 +77,33 @@
 
             .panel {
                 position: fixed;
-                top: 12px;
-                left: 12px;
-                width: 200px;
-                max-height: calc(100vh - 24px);
+                top: 8px;
+                left: 8px;
+                width: 215px;
+                /* Near full height, like Arc's sidebar - the width is what shrinks, not
+                   the height. */
+                height: calc(100vh - 16px);
                 display: flex;
                 flex-direction: column;
-                gap: 6px;
-                padding: 8px;
+                gap: 10px;
+                padding: 12px 8px 10px;
                 box-sizing: border-box;
 
-                background: rgba(32, 33, 36, 0.86);
-                -webkit-backdrop-filter: blur(18px) saturate(160%);
-                backdrop-filter: blur(18px) saturate(160%);
-                border: 1px solid rgba(255, 255, 255, 0.10);
+                background: var(--space-bg, #cccccc);
                 border-radius: 14px;
-                box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+                box-shadow: 0 14px 44px rgba(0, 0, 0, 0.38);
 
-                color: #e8eaed;
+                color: #333;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                font-size: 12px;
-                line-height: 1.25;
+                font-size: 13px;
+                line-height: 1.3;
 
                 /* Hidden by default: translated out AND non-interactive, so a hidden rail
                    can never swallow a click meant for the page. */
                 transform: translateX(calc(-100% - 16px));
                 opacity: 0;
                 pointer-events: none;
-                transition: transform 0.18s ease, opacity 0.18s ease;
+                transition: transform 0.2s ease, opacity 0.2s ease, background-color 0.3s ease;
             }
 
             .panel.open {
@@ -121,11 +122,9 @@
             .title {
                 flex: 1;
                 min-width: 0;
+                font-size: 15px;
                 font-weight: 600;
-                font-size: 12px;
-                letter-spacing: 0.02em;
-                text-transform: uppercase;
-                opacity: 0.6;
+                opacity: 0.95;
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
@@ -149,46 +148,48 @@
                 padding: 0;
             }
 
-            .icon-btn:hover { background: rgba(255, 255, 255, 0.12); opacity: 1; }
-            .icon-btn.active { opacity: 1; background: rgba(255, 255, 255, 0.16); }
+            .icon-btn:hover { background: rgba(255, 255, 255, 0.35); opacity: 1; }
+            .icon-btn.active { opacity: 1; background: rgba(255, 255, 255, 0.55); }
 
             .spaces {
+                flex: none;
                 display: flex;
                 gap: 6px;
                 overflow-x: auto;
                 scrollbar-width: none;
-                padding-bottom: 2px;
+                padding: 2px;
             }
             .spaces::-webkit-scrollbar { display: none; }
 
             .space {
                 flex: none;
-                height: 22px;
+                height: 26px;
                 max-width: 104px;
                 display: flex;
                 align-items: center;
                 gap: 6px;
-                padding: 0 9px;
+                padding: 0 10px;
                 border: none;
-                border-radius: 12px;
-                background: rgba(255, 255, 255, 0.08);
+                border-radius: 13px;
+                background: rgba(255, 255, 255, 0.25);
                 color: inherit;
                 font: inherit;
                 font-size: 12px;
                 cursor: pointer;
                 white-space: nowrap;
                 overflow: hidden;
+                transition: background-color 0.2s;
             }
 
-            .space:hover { background: rgba(255, 255, 255, 0.16); }
-            .space.active { background: rgba(255, 255, 255, 0.22); }
+            .space:hover { background: rgba(255, 255, 255, 0.45); }
+            .space.active { background: #ffffff; font-weight: 600; }
 
             .dot {
                 flex: none;
                 width: 8px;
                 height: 8px;
                 border-radius: 50%;
-                background: var(--dot, #9aa0a6);
+                background: var(--dot, #cccccc);
             }
 
             .space-name {
@@ -197,78 +198,80 @@
                 text-overflow: ellipsis;
             }
 
+            /* Mirrors .pinned-favicons in the side panel: a wrapping grid, not a strip. */
             .pinned {
+                flex: none;
                 display: flex;
                 flex-wrap: wrap;
-                gap: 6px;
+                gap: 8px;
+                justify-content: space-between;
             }
 
             .pin-tab {
-                flex: none;
-                width: 26px;
-                height: 26px;
+                flex: 1 1 24%;
+                min-width: 0;
+                height: 40px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
                 border: none;
                 border-radius: 8px;
-                background: rgba(255, 255, 255, 0.08);
+                background: rgba(255, 255, 255, 0.2);
                 cursor: pointer;
                 padding: 0;
+                transition: background-color 0.2s;
             }
 
-            .pin-tab:hover { background: rgba(255, 255, 255, 0.18); }
-            .pin-tab.active { background: rgba(255, 255, 255, 0.26); }
+            .pin-tab:hover { background: rgba(0, 0, 0, 0.10); }
+            .pin-tab.active { background: #ECEFF1; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); }
+
+            .pin-tab .favicon, .pin-tab .fallback-icon {
+                width: 20px;
+                height: 20px;
+            }
 
             .divider {
+                flex: none;
                 height: 1px;
-                background: rgba(255, 255, 255, 0.10);
-                margin: 2px 0;
+                background: rgba(0, 0, 0, 0.10);
+                margin: 0 4px;
             }
 
+            /* The part that grows, so the panel fills its height. */
             .tabs {
+                flex: 1 1 auto;
+                min-height: 0;
                 display: flex;
                 flex-direction: column;
-                gap: 2px;
+                gap: 4px;
                 overflow-y: auto;
-                scrollbar-width: thin;
-                scrollbar-color: rgba(255,255,255,0.2) transparent;
-                min-height: 0;
+                scrollbar-width: none;
             }
-            .tabs::-webkit-scrollbar { width: 6px; }
-            .tabs::-webkit-scrollbar-thumb {
-                background: rgba(255, 255, 255, 0.18);
-                border-radius: 3px;
-            }
+            .tabs::-webkit-scrollbar { display: none; }
 
             .tab {
                 display: flex;
                 align-items: center;
-                gap: 7px;
-                padding: 3px 5px;
-                border-radius: 7px;
+                gap: 8px;
+                padding: 4px 10px;
+                min-height: 30px;
+                border-radius: 12px;
                 cursor: pointer;
-                min-height: 22px;
+                transition: background-color 0.2s;
             }
 
-            .tab:hover { background: rgba(255, 255, 255, 0.10); }
-            .tab.active { background: rgba(255, 255, 255, 0.18); }
+            .tab:hover { background: rgba(0, 0, 0, 0.10); }
+            .tab.active { background: #ECEFF1; }
 
-            .favicon {
+            .favicon, .fallback-icon {
                 flex: none;
-                width: 14px;
-                height: 14px;
+                width: 16px;
+                height: 16px;
                 border-radius: 3px;
                 object-fit: contain;
             }
 
-            .fallback-icon {
-                flex: none;
-                width: 14px;
-                height: 14px;
-                border-radius: 3px;
-                background: rgba(255, 255, 255, 0.2);
-            }
+            .fallback-icon { background: rgba(0, 0, 0, 0.18); }
 
             .tab-title {
                 flex: 1;
@@ -280,8 +283,8 @@
 
             .close {
                 flex: none;
-                width: 18px;
-                height: 18px;
+                width: 20px;
+                height: 20px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
@@ -297,24 +300,27 @@
             }
 
             .tab:hover .close { opacity: 0.6; }
-            .close:hover { opacity: 1; background: rgba(255, 255, 255, 0.16); }
+            .close:hover { opacity: 1; background: rgba(0, 0, 0, 0.12); }
 
             .new-tab {
+                flex: none;
                 display: flex;
                 align-items: center;
                 justify-content: center;
                 gap: 6px;
-                height: 24px;
+                height: 38px;
                 border: none;
-                border-radius: 8px;
-                background: rgba(255, 255, 255, 0.08);
+                border-radius: 12px;
+                background: rgba(255, 255, 255, 0.25);
                 color: inherit;
                 font: inherit;
-                font-size: 12px;
+                font-size: 13px;
+                font-weight: 500;
                 cursor: pointer;
+                transition: background-color 0.2s;
             }
 
-            .new-tab:hover { background: rgba(255, 255, 255, 0.18); }
+            .new-tab:hover { background: rgba(255, 255, 255, 0.45); }
 
             .empty {
                 padding: 10px 4px;
@@ -322,33 +328,18 @@
                 font-size: 12px;
             }
 
-            @media (prefers-color-scheme: light) {
-                .panel {
-                    background: rgba(250, 250, 250, 0.88);
-                    border-color: rgba(0, 0, 0, 0.10);
-                    color: #202124;
-                    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.22);
-                }
-                .space, .pin-tab, .new-tab { background: rgba(0, 0, 0, 0.06); }
-                .space:hover, .pin-tab:hover, .new-tab:hover { background: rgba(0, 0, 0, 0.12); }
-                .space.active, .pin-tab.active { background: rgba(0, 0, 0, 0.16); }
-                .tab:hover { background: rgba(0, 0, 0, 0.07); }
-                .tab.active { background: rgba(0, 0, 0, 0.12); }
-                .divider { background: rgba(0, 0, 0, 0.10); }
-                .icon-btn:hover { background: rgba(0, 0, 0, 0.10); }
-            }
         </style>
 
         <div class="panel">
+            <div class="pinned"></div>
             <div class="header">
                 <span class="title">Arcify</span>
                 <button class="icon-btn pin" title="Keep open">&#9678;</button>
             </div>
-            <div class="spaces"></div>
-            <div class="pinned"></div>
             <div class="divider"></div>
             <div class="tabs"></div>
             <button class="new-tab">+ New Tab</button>
+            <div class="spaces"></div>
         </div>
     `;
 
@@ -417,6 +408,12 @@
         const activeSpace = state.spaces.find(space => space.active);
         titleEl.textContent = activeSpace ? activeSpace.name : 'Arcify';
 
+        // The whole panel takes the active space's colour, the way the side panel does.
+        panel.style.setProperty(
+            '--space-bg',
+            SPACE_COLORS[activeSpace && activeSpace.color] || SPACE_COLORS.grey
+        );
+
         // --- spaces ---
         spacesEl.replaceChildren();
         let activeChip = null;
@@ -427,7 +424,7 @@
 
             const dot = document.createElement('span');
             dot.className = 'dot';
-            dot.style.setProperty('--dot', CHROME_GROUP_COLORS[space.color] || CHROME_GROUP_COLORS.grey);
+            dot.style.setProperty('--dot', SPACE_COLORS[space.color] || SPACE_COLORS.grey);
 
             const label = document.createElement('span');
             label.className = 'space-name';
