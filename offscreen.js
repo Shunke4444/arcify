@@ -20,22 +20,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function writeToClipboard(text) {
+    // execCommand FIRST, not as a fallback. An offscreen document is never focused, and
+    // navigator.clipboard.writeText rejects with NotAllowedError ("Document is not
+    // focused") in an unfocused document. The textarea path has no such requirement, which
+    // is why Chrome's own offscreen clipboard sample uses it.
+    const scratch = document.getElementById('clipboard-scratch');
+    if (scratch) {
+        try {
+            scratch.value = text;
+            scratch.focus();
+            scratch.select();
+            scratch.setSelectionRange(0, text.length);
+
+            if (document.execCommand('copy')) {
+                return;
+            }
+            console.warn('[Offscreen] execCommand("copy") returned false');
+        } catch (execError) {
+            console.warn('[Offscreen] execCommand path threw:', execError);
+        }
+    } else {
+        console.warn('[Offscreen] Clipboard scratch element missing');
+    }
+
+    // Async clipboard API as the backstop, for the case where execCommand is unavailable.
     try {
         await navigator.clipboard.writeText(text);
         return;
     } catch (clipboardError) {
-        // Fall through to the textarea path below.
-    }
-
-    const scratch = document.getElementById('clipboard-scratch');
-    if (!scratch) {
-        throw new Error('Clipboard scratch element missing');
-    }
-
-    scratch.value = text;
-    scratch.select();
-
-    if (!document.execCommand('copy')) {
-        throw new Error('document.execCommand("copy") returned false');
+        throw new Error(`Both clipboard paths failed: ${clipboardError && clipboardError.message}`);
     }
 }

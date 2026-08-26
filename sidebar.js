@@ -2432,28 +2432,41 @@ async function createNewFolder(spaceElement, options = {}) {
         folderNameInput.focus();
     });
 
+    // Enter and Escape both call blur(), whose handler saves again. Without this latch,
+    // Escape cancelled and then immediately re-saved, creating the folder it just cancelled.
+    let settled = false;
+
     const saveOrCancelNewFolderEdit = async (save) => {
-        if (save) {
-            const newName = folderNameInput.value.trim();
-            if (newName) {
-                const parentId = await resolveParentId();
-                const existingFolders = await chrome.bookmarks.getChildren(parentId);
-                const folder = existingFolders.find(f => !f.url && f.title === newName);
-                if (!folder) {
-                    const created = await chrome.bookmarks.create({
-                        parentId,
-                        title: newName
-                    });
-                    folderElement.dataset.folderId = created.id;
-                } else {
-                    folderElement.dataset.folderId = folder.id;
-                }
+        if (settled) return;
+        settled = true;
+
+        const newName = folderNameInput.value.trim();
+
+        if (save && newName) {
+            const parentId = await resolveParentId();
+            const existingFolders = await chrome.bookmarks.getChildren(parentId);
+            const folder = existingFolders.find(f => !f.url && f.title === newName);
+            if (!folder) {
+                const created = await chrome.bookmarks.create({
+                    parentId,
+                    title: newName
+                });
+                folderElement.dataset.folderId = created.id;
+            } else {
+                folderElement.dataset.folderId = folder.id;
             }
+
+            folderNameInput.style.display = 'none';
+            folderTitle.innerHTML = newName;
+            folderTitle.style.display = 'inline';
+            return;
         }
-        // Update display regardless of save/cancel
-        folderNameInput.style.display = 'none';
-        folderTitle.innerHTML = folderNameInput.value || 'Untitled';
-        folderTitle.style.display = 'inline';
+
+        // Nothing was written to the bookmark tree, so there is no folder. Leaving the
+        // element behind produced a convincing "Untitled" folder that survived until the
+        // next render and then silently vanished.
+        collapsedFolderShownTabs.delete(folderElement);
+        folderElement.remove();
     };
 
     folderNameInput.addEventListener('blur', () => saveOrCancelNewFolderEdit(true));

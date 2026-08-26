@@ -397,12 +397,20 @@ async function copyCurrentTabUrlWithFallback() {
         return;
     }
 
-    if (!tab || !tab.url) {
+    // tab.url can be empty while a tab is still committing; pendingUrl carries it then.
+    const url = tab && (tab.url || tab.pendingUrl);
+
+    if (!tab) {
         Logger.error("[URLCopy] No active tab found");
         return;
     }
 
-    const url = tab.url;
+    if (!url) {
+        Logger.error("[URLCopy] Active tab has no readable URL", { tabId: tab.id, status: tab.status });
+        return;
+    }
+
+    Logger.log(`[URLCopy] Copying: ${url}`);
 
     // PRIMARY: copy inside the page. Needs no offscreen document, but only works where
     // scripts can be injected — hence the same guard injectSpotlightScript uses.
