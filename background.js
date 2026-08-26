@@ -288,6 +288,10 @@ async function switchToSpaceFromRail(spaceId, windowId) {
 //
 // Retried because the destination content script may not have loaded yet (a discarded
 // tab, or one still committing its first navigation).
+// Which windows currently have their rail open. The rail is per tab, so switching tabs
+// means switching documents - without this, every tab switch looked like the rail closing.
+const railOpenByWindow = new Map();
+
 async function handOverRail(tabId, attempt = 0) {
     if (!tabId) return;
 
@@ -323,7 +327,12 @@ function broadcastRailUpdate() {
     }, 120);
 }
 
-chrome.tabs.onActivated.addListener(broadcastRailUpdate);
+chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
+    broadcastRailUpdate();
+    if (railOpenByWindow.get(windowId)) {
+        handOverRail(tabId);
+    }
+});
 chrome.tabs.onRemoved.addListener(broadcastRailUpdate);
 chrome.tabs.onMoved.addListener(broadcastRailUpdate);
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
@@ -1054,6 +1063,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             handOverRail(activatedTabId);
             return {};
         }, sendResponse, 'switching space from rail');
+
+    } else if (message.action === 'railSetSpaceColor') {
+        return handleAsyncMessage(async () => {
+            // tabGroups.onUpdated carries this straight back to the side panel, which
+            // renames/recolours its space from the group - so both surfaces agree.
+            await chrome.tabGroups.update(message.spaceId, { color: message.color });
+            return {};
+        }, sendResponse, 'setting space colour from rail');
+
+    } else if (message.action === 'railOpened') {
+        // Remember that this window wants a rail, so a plain tab switch (Ctrl+Tab, a click
+        // in the tab strip, anything at all) re-opens it in the tab being switched TO.
+        if (sender.tab?.windowId) railOpenByWindow.set(sender.tab.windowId, true);
+        return false;
+
+    } else if (message.action === 'railClosed') {
+        if (sender.tab?.windowId) railOpenByWindow.delete(sender.tab.windowId);
+        return false;
 
     } else if (message.action === 'railNewTab') {
         return handleAsyncMessage(async () => {

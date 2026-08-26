@@ -32,8 +32,12 @@
     const HIDE_DELAY_MS = 260;
     // How close to the left edge the pointer must get to summon the panel.
     const EDGE_TRIGGER_PX = 6;
-    // Once open, the pointer has to leave this band before it hides again.
-    const PANEL_REGION_PX = 248;
+    // How far past the panel's right edge the pointer must go before it hides.
+    const HIDE_MARGIN_PX = 36;
+    const MIN_WIDTH_PX = 160;
+    const MAX_WIDTH_PX = 460;
+    const DEFAULT_WIDTH_PX = 215;
+    const WIDTH_STORAGE_KEY = 'railWidth';
     // Arcify's own palette from styles.css, not Chrome's tab-group colours - the point is
     // for the rail to look like the side panel it stands in for.
     const SPACE_COLORS = {
@@ -53,6 +57,8 @@
     let pinned = false;
     let open = false;
     let refreshQueued = false;
+    let width = DEFAULT_WIDTH_PX;
+    let resizing = false;
 
     // ---------------------------------------------------------------- shadow root
 
@@ -79,7 +85,7 @@
                 position: fixed;
                 top: 8px;
                 left: 8px;
-                width: 215px;
+                width: var(--rail-width, 215px);
                 /* Near full height, like Arc's sidebar - the width is what shrinks, not
                    the height. */
                 height: calc(100vh - 16px);
@@ -105,6 +111,10 @@
                 pointer-events: none;
                 transition: transform 0.2s ease, opacity 0.2s ease, background-color 0.3s ease;
             }
+
+            /* A handover opens a DIFFERENT document's panel. Sliding in each time made
+               every tab switch look like the rail flying off-screen and back. */
+            .panel.instant { transition: none !important; }
 
             .panel.open {
                 transform: translateX(0);
@@ -197,6 +207,51 @@
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
+
+            /* --- drag handle on the right edge --- */
+            .resizer {
+                position: absolute;
+                top: 0;
+                right: -3px;
+                width: 8px;
+                height: 100%;
+                cursor: col-resize;
+                border-radius: 0 14px 14px 0;
+            }
+
+            .resizer:hover, .panel.resizing .resizer {
+                background: rgba(0, 0, 0, 0.16);
+            }
+
+            /* While dragging, the pointer leaves the panel constantly - suppress the
+               hover-out hide and the text selection the drag would otherwise cause. */
+            .panel.resizing { user-select: none; }
+
+            /* --- space colour picker --- */
+            .swatches {
+                display: none;
+                flex-wrap: wrap;
+                gap: 6px;
+                padding: 6px 4px;
+                flex: none;
+            }
+
+            .swatches.open { display: flex; }
+
+            .swatch {
+                flex: none;
+                width: 20px;
+                height: 20px;
+                border-radius: 50%;
+                border: 2px solid transparent;
+                cursor: pointer;
+                padding: 0;
+                background: var(--swatch, #cccccc);
+                transition: transform 0.15s ease;
+            }
+
+            .swatch:hover { transform: scale(1.12); }
+            .swatch.selected { border-color: rgba(0, 0, 0, 0.45); }
 
             /* Mirrors .pinned-favicons in the side panel: a wrapping grid, not a strip. */
             .pinned {
@@ -334,12 +389,15 @@
             <div class="pinned"></div>
             <div class="header">
                 <span class="title">Arcify</span>
+                <button class="icon-btn palette" title="Space colour">&#9679;</button>
                 <button class="icon-btn pin" title="Keep open">&#9678;</button>
             </div>
+            <div class="swatches"></div>
             <div class="divider"></div>
             <div class="tabs"></div>
             <button class="new-tab">+ New Tab</button>
             <div class="spaces"></div>
+            <div class="resizer" title="Drag to resize"></div>
         </div>
     `;
 
@@ -350,6 +408,71 @@
     const titleEl = shadow.querySelector('.title');
     const pinBtn = shadow.querySelector('.pin');
     const newTabBtn = shadow.querySelector('.new-tab');
+    const paletteBtn = shadow.querySelector('.palette');
+    const swatchesEl = shadow.querySelector('.swatches');
+    const resizer = shadow.querySelector('.resizer');
+
+    // ---------------------------------------------------------------- width
+
+    function applyWidth(next) {
+        width = Math.round(Math.min(MAX_WIDTH_PX, Math.max(MIN_WIDTH_PX, next)));
+        panel.style.setProperty('--rail-width', `${width}px`);
+    }
+
+    // Width is per browser profile, not per tab - every rail in every tab should agree.
+    async function loadWidth() {
+        try {
+            const stored = await chrome.storage.local.get(WIDTH_STORAGE_KEY);
+            if (stored && typeof stored[WIDTH_STORAGE_KEY] === 'number') {
+                applyWidth(stored[WIDTH_STORAGE_KEY]);
+                return;
+            }
+        } catch (error) {
+            // Storage unavailable; the default is fine.
+        }
+        applyWidth(DEFAULT_WIDTH_PX);
+    }
+
+    function saveWidth() {
+        chrome.storage.local.set({ [WIDTH_STORAGE_KEY]: width }).catch(() => { });
+    }
+
+    // Rails in other tabs pick the new width up without needing a reload.
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'local' || !changes[WIDTH_STORAGE_KEY]) return;
+        const next = changes[WIDTH_STORAGE_KEY].newValue;
+        if (typeof next === 'number' && next !== width) applyWidth(next);
+    });
+
+    resizer.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        resizing = true;
+        panel.classList.add('resizing');
+        resizer.setPointerCapture(event.pointerId);
+    });
+
+    resizer.addEventListener('pointermove', (event) => {
+        if (!resizing) return;
+        // The panel starts 8px from the viewport edge, so its right edge is at
+        // clientX - 8 relative to the panel's own box.
+        applyWidth(event.clientX - 8);
+    });
+
+    function endResize(event) {
+        if (!resizing) return;
+        resizing = false;
+        panel.classList.remove('resizing');
+        try {
+            resizer.releasePointerCapture(event.pointerId);
+        } catch (error) {
+            // Capture already gone.
+        }
+        saveWidth();
+    }
+
+    resizer.addEventListener('pointerup', endResize);
+    resizer.addEventListener('pointercancel', endResize);
 
     // ---------------------------------------------------------------- messaging
 
@@ -439,6 +562,8 @@
             spacesEl.appendChild(btn);
         }
 
+        if (swatchesEl.classList.contains('open')) renderSwatches();
+
         // The row scrolls horizontally, so with more spaces than fit at 200px the active
         // one was simply off the end - visible as a clipped chip showing only its dot.
         if (activeChip) {
@@ -492,6 +617,35 @@
         }
     }
 
+    // ---------------------------------------------------------------- space colour
+
+    function renderSwatches() {
+        const activeSpace = state.spaces.find(space => space.active);
+        swatchesEl.replaceChildren();
+        if (!activeSpace) return;
+
+        for (const [name, hex] of Object.entries(SPACE_COLORS)) {
+            const swatch = document.createElement('button');
+            swatch.className = 'swatch' + (activeSpace.color === name ? ' selected' : '');
+            swatch.title = name;
+            swatch.style.setProperty('--swatch', hex);
+            swatch.addEventListener('click', async () => {
+                await send('railSetSpaceColor', { spaceId: activeSpace.id, color: name });
+                swatchesEl.classList.remove('open');
+                paletteBtn.classList.remove('active');
+                queueRefresh();
+            });
+            swatchesEl.appendChild(swatch);
+        }
+    }
+
+    paletteBtn.addEventListener('click', () => {
+        const opening = !swatchesEl.classList.contains('open');
+        swatchesEl.classList.toggle('open', opening);
+        paletteBtn.classList.toggle('active', opening);
+        if (opening) renderSwatches();
+    });
+
     // ---------------------------------------------------------------- visibility
 
     function show() {
@@ -499,17 +653,26 @@
         if (!open) {
             open = true;
             panel.classList.add('open');
+            // Tell the service worker this window wants a rail, so switching tabs by any
+            // means re-opens it in the tab being switched to.
+            send('railOpened');
         }
         refresh();
     }
 
+    function hideNow() {
+        open = false;
+        panel.classList.remove('open');
+        swatchesEl.classList.remove('open');
+        paletteBtn.classList.remove('active');
+        send('railClosed');
+    }
+
     function scheduleHide() {
-        if (pinned) return;
+        // Dragging the edge drags the pointer outside the panel constantly.
+        if (pinned || resizing) return;
         clearTimeout(hideTimer);
-        hideTimer = setTimeout(() => {
-            open = false;
-            panel.classList.remove('open');
-        }, HIDE_DELAY_MS);
+        hideTimer = setTimeout(hideNow, HIDE_DELAY_MS);
     }
 
     // Edge detection by pointer position rather than a hit-testing element. A fixed strip
@@ -522,7 +685,7 @@
         }
         // Moving away from the edge while the panel is closed: nothing to do. While open,
         // the panel's own mouseleave handles it.
-        if (open && !pinned && event.clientX > PANEL_REGION_PX) {
+        if (open && !pinned && !resizing && event.clientX > width + HIDE_MARGIN_PX) {
             scheduleHide();
         }
     }, { passive: true });
@@ -536,8 +699,7 @@
         host.style.display = isFullscreen ? 'none' : '';
         if (isFullscreen) {
             clearTimeout(hideTimer);
-            open = false;
-            panel.classList.remove('open');
+            hideNow();
         }
     });
 
@@ -551,8 +713,7 @@
             pinned = false;
             pinBtn.classList.remove('active');
             clearTimeout(hideTimer);
-            open = false;
-            panel.classList.remove('open');
+            hideNow();
             return;
         }
 
@@ -600,7 +761,12 @@
         // Not pinned: the point is that it survives the action, not that it stays forever.
         // The next mousemove away from the panel hides it, exactly like a hover-open.
         if (message.action === 'railOpenImmediately') {
+            // Appear already in place rather than animating in from off-screen.
+            panel.classList.add('instant');
             show();
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => panel.classList.remove('instant'));
+            });
             // The pointer is already sitting over the panel area, but no mousemove has
             // fired in this document yet, so nothing would keep it alive. Suppress the
             // hide timer until the pointer actually moves somewhere.
@@ -612,4 +778,6 @@
 
     // documentElement, not body: body may not exist yet and may be replaced by the page.
     document.documentElement.appendChild(host);
+
+    loadWidth();
 })();
