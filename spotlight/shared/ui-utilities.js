@@ -136,9 +136,16 @@ export class SpotlightUtils {
 
     // Get favicon URL with fallback (consolidated from overlay.js and popup.js)
     static getFaviconUrl(result) {
-        if (result.favicon && result.favicon.startsWith('http')) {
-            return result.favicon;
-        }
+        // NEVER hand back a raw http(s) favicon here.
+        //
+        // Spotlight renders inside whatever page is open, and an open tab's favIconUrl is
+        // whatever that tab's site serves - including http://localhost:3000/favicon.ico for
+        // a dev server. Using it directly made the HOST page request a local address, which
+        // Brave surfaces as "<site> is asking you to access other apps and services on this
+        // device", and which quietly tells every site you visit what is on your machine.
+        //
+        // chrome://favicon2 via the extension's own /_favicon/ endpoint is served from the
+        // browser's icon cache: no network request, no cross-origin fetch, no prompt.
 
         // Special handling for autocomplete suggestions
         if (result.type === ResultType.AUTOCOMPLETE_SUGGESTION) {

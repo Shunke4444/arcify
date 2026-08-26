@@ -509,11 +509,28 @@
 
     // ---------------------------------------------------------------- rendering
 
+    // Resolve icons through the extension's own /_favicon/ endpoint rather than the tab's
+    // favIconUrl. The rail renders inside the page, so using a tab's real icon URL would
+    // make THIS page fetch it - and for a localhost dev tab that is a local-network request
+    // from a public site, which Brave prompts about and which leaks what you have open.
+    function faviconUrlFor(tab) {
+        if (!tab.url) return null;
+        try {
+            const url = new URL(chrome.runtime.getURL('/_favicon/'));
+            url.searchParams.set('pageUrl', tab.url);
+            url.searchParams.set('size', '32');
+            return url.toString();
+        } catch (error) {
+            return null;
+        }
+    }
+
     function faviconFor(tab) {
-        if (tab.favIconUrl) {
+        const src = faviconUrlFor(tab);
+        if (src) {
             const img = document.createElement('img');
             img.className = 'favicon';
-            img.src = tab.favIconUrl;
+            img.src = src;
             img.alt = '';
             img.addEventListener('error', () => {
                 const stub = document.createElement('span');
