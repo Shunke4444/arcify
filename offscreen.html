@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Arcify Clipboard</title>
+</head>
+
+<body>
+    <!--
+      Offscreen document, never visible. MV3 service workers have no DOM and no clipboard,
+      so background.js opens this page to perform clipboard writes and closes it again.
+      The textarea is the fallback path for when navigator.clipboard is unavailable.
+    -->
+    <textarea id="clipboard-scratch" aria-hidden="true"></textarea>
+    <script src="offscreen.js"></script>
+</body>
+
+</html>

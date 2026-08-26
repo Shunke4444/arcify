@@ -144,19 +144,18 @@ async function closeSpotlightInTrackedTabs() {
 /**
  * PERFORMANCE-OPTIMIZED SPOTLIGHT ACTIVATION
  * 
+ * Already in front: the Arcify newtab page
+ * - Focus the input it already has; do not stack another newtab page on top
+ * 
  * Primary Strategy: Fast messaging to dormant content script
  * - Content script pre-loaded on all pages at document_start
  * - Instant activation via chrome.tabs.sendMessage() (~50-100ms)
  * - No waiting for page resources or script injection
  * 
- * Fallback Strategy: Legacy script injection
- * - Used when messaging fails (content script not ready, restricted URLs)
- * - Chrome.scripting.executeScript() with variable setup + script injection
- * - Slower but reliable fallback for edge cases
- * 
- * Final Fallback: Popup mode
- * - Used when all content script methods fail (chrome:// URLs, etc.)
- * - Opens extension popup with same spotlight functionality
+ * Fallback Strategy: the Arcify newtab page
+ * - Used when the tab cannot host a content script (chrome://, the Web Store, PDFs)
+ *   or when messaging fails, and opened via chrome.tabs.create()
+ * - There is no popup mode; the popup files were deleted
  */
 
 // Helper function to check if a URL supports content script injection
@@ -167,12 +166,22 @@ function supportsContentScripts(url) {
     const restrictedPatterns = [
         /^chrome:\/\//,
         /^chrome-extension:\/\//,
+        /^chrome-untrusted:\/\//,
+        /^chrome-search:\/\//,
+        /^devtools:\/\//,
+        /^view-source:/,
+        /^file:\/\//,
         /^edge:\/\//,
         /^about:/,
         /^moz-extension:\/\//,
         /^vivaldi:\/\//,
         /^brave:\/\//,
-        /^opera:\/\//
+        /^opera:\/\//,
+        // The Chrome Web Store is blocked for extensions on both its old and new hosts.
+        /^https?:\/\/chromewebstore\.google\.com/,
+        /^https?:\/\/chrome\.google\.com\/webstore/,
+        // Chrome's built-in PDF viewer replaces the document; content scripts never run.
+        /\.pdf($|[?#])/i
     ];
 
     // Check if URL matches any restricted pattern
@@ -183,6 +192,35 @@ function supportsContentScripts(url) {
     }
 
     return true;
+}
+
+// The extension page used both as the newtab override and as the restricted-URL fallback.
+const NEWTAB_PATH = 'spotlight/newtab.html';
+
+// Offscreen document used for clipboard writes (see copyTextViaOffscreen).
+const OFFSCREEN_PATH = 'offscreen.html';
+
+// True when the tab is already showing Arcify's own newtab page.
+function isArcifyNewTabUrl(url) {
+    if (!url) return false;
+    return url.startsWith(chrome.runtime.getURL(NEWTAB_PATH));
+}
+
+// The newtab page is an extension page, so it listens on chrome.runtime.onMessage rather
+// than chrome.tabs.onMessage — broadcast, and let the page match on tabId.
+async function focusExistingNewTabSpotlight(tab) {
+    try {
+        await chrome.windows.update(tab.windowId, { focused: true });
+    } catch (windowError) {
+        // Window is already focused, or cannot be focused. Not fatal.
+    }
+
+    try {
+        await chrome.runtime.sendMessage({ action: 'focusSpotlightInput', tabId: tab.id });
+        Logger.log('[Spotlight] Focused the newtab page already in front instead of opening another.');
+    } catch (error) {
+        Logger.log('[Spotlight] Newtab page did not answer the focus request:', error);
+    }
 }
 
 // Helper function to activate spotlight via content script messaging
@@ -212,6 +250,13 @@ async function injectSpotlightScript(spotlightTabMode) {
         // Get the active tab
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (tab) {
+            // Already on the Arcify newtab page: focus its input instead of creating yet
+            // another newtab page on every keypress.
+            if (isArcifyNewTabUrl(tab.url)) {
+                await focusExistingNewTabSpotlight(tab);
+                return;
+            }
+
             // Check if the tab URL supports content scripts
             // If not, skip directly to custom new tab fallback
             if (!supportsContentScripts(tab.url)) {
@@ -237,6 +282,12 @@ async function injectSpotlightScript(spotlightTabMode) {
                     });
                     return; // Exit early - no need for fallbacks
                 }
+
+                // A falsy or unsuccessful response is not an exception, so without this
+                // branch control fell out of the block and nothing happened at all.
+                Logger.log("Content script answered without success, using new tab fallback:", response);
+                await fallbackToChromeTabs(spotlightTabMode);
+                return;
             } catch (messageError) {
                 Logger.log("Content script messaging failed, using new tab fallback:", messageError);
                 // If messaging fails, fall back to opening spotlight in a new tab
@@ -244,6 +295,10 @@ async function injectSpotlightScript(spotlightTabMode) {
                 return;
             }
         }
+
+        // No active tab to work with (detached devtools window, no window focused, ...).
+        Logger.log("No active tab found, using new tab fallback");
+        await fallbackToChromeTabs(spotlightTabMode);
     } catch (error) {
         Logger.log("All spotlight activation methods failed, using Chrome tab fallback:", error);
         // Final fallback: Chrome tab operations
@@ -262,7 +317,7 @@ async function fallbackToChromeTabs(spotlightTabMode) {
         // Open custom new tab page with spotlight
         // This provides a better UX than chrome://newtab/ since users can still use spotlight
         // even when it cannot be injected on restricted pages (chrome://, extension pages, etc.)
-        await chrome.tabs.create({ url: chrome.runtime.getURL('spotlight/newtab.html'), active: true });
+        await chrome.tabs.create({ url: chrome.runtime.getURL(NEWTAB_PATH), active: true });
         Logger.log("Spotlight failed - opened custom new tab with spotlight interface");
 
     } catch (chromeTabError) {
@@ -280,84 +335,141 @@ async function fallbackToChromeTabs(spotlightTabMode) {
     }
 }
 
-// Helper function for URL copying via script injection
-async function copyCurrentTabUrlWithFallback() {
+/**
+ * Write text to the clipboard from the service worker.
+ *
+ * MV3 service workers have no DOM and no clipboard, so the write happens in an offscreen
+ * document. This is the only path that works with the side panel CLOSED and on pages that
+ * reject injected scripts (chrome://, the PDF viewer, the Web Store, other extensions).
+ */
+async function copyTextViaOffscreen(text) {
+    const offscreenUrl = chrome.runtime.getURL(OFFSCREEN_PATH);
+
+    // Only one offscreen document is allowed per extension, and createDocument throws if
+    // one already exists — check before creating.
+    const existing = await chrome.runtime.getContexts({
+        contextTypes: ['OFFSCREEN_DOCUMENT'],
+        documentUrls: [offscreenUrl]
+    });
+
+    if (existing.length === 0) {
+        await chrome.offscreen.createDocument({
+            url: OFFSCREEN_PATH,
+            reasons: ['CLIPBOARD'],
+            justification: 'Write the current tab URL to the clipboard.'
+        });
+    }
+
     try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab) {
-            Logger.error("[URLCopy] No active tab found");
-            return;
+        const response = await chrome.runtime.sendMessage({
+            target: 'offscreen',
+            action: 'copyToClipboard',
+            text
+        });
+
+        if (!response || !response.success) {
+            throw new Error((response && response.error) || 'Offscreen clipboard write reported failure');
         }
-
-        Logger.log(`[URLCopy] Copying URL via script injection: ${tab.url}`);
-
-        // PRIMARY: Script injection approach (universal, no permission popups)
+    } finally {
         try {
-            await chrome.scripting.executeScript({
+            await chrome.offscreen.closeDocument();
+        } catch (closeError) {
+            // Already closed, or never opened. Nothing to clean up.
+        }
+    }
+}
+
+// Toast in the side panel. Only called after a CONFIRMED write — it used to fire as soon
+// as executeScript resolved, which was before the async clipboard write had settled.
+function notifyUrlCopied(url) {
+    chrome.runtime.sendMessage({ action: "urlCopySuccess" }).catch(() => {
+        Logger.log(`[URLCopy] Copied ${url}, but no side panel was listening for the toast`);
+    });
+}
+
+// Helper function for URL copying, with an offscreen document as the universal fallback
+async function copyCurrentTabUrlWithFallback() {
+    let tab;
+    try {
+        [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    } catch (queryError) {
+        Logger.error("[URLCopy] Failed to query the active tab:", queryError);
+        return;
+    }
+
+    if (!tab || !tab.url) {
+        Logger.error("[URLCopy] No active tab found");
+        return;
+    }
+
+    const url = tab.url;
+
+    // PRIMARY: copy inside the page. Needs no offscreen document, but only works where
+    // scripts can be injected — hence the same guard injectSpotlightScript uses.
+    if (supportsContentScripts(url)) {
+        try {
+            const [injection] = await chrome.scripting.executeScript({
                 target: { tabId: tab.id },
-                func: (url) => {
-                    // This function runs in webpage context but avoids permission issues
-                    // by being injected from extension context
-                    navigator.clipboard.writeText(url).then(() => {
-                        Logger.log(`[URLCopy] Script injection succeeded: ${url}`);
-                    }).catch(err => {
-                        Logger.error("[URLCopy] Script injection clipboard failed:", err);
-                        // Fallback to older method if clipboard API fails
-                        const textarea = document.createElement('textarea');
-                        textarea.value = url;
-                        document.body.appendChild(textarea);
-                        textarea.select();
-                        document.execCommand('copy');
-                        document.body.removeChild(textarea);
-                        Logger.log(`[URLCopy] Fallback copy succeeded: ${url}`);
-                    });
+                func: (value) => {
+                    // NOTE: executeScript serializes this function and DROPS its closure.
+                    // Nothing from the service worker scope exists here — referencing
+                    // Logger threw a ReferenceError and killed the fallback below.
+                    return navigator.clipboard.writeText(value)
+                        .then(() => true)
+                        .catch(() => {
+                            // Older path for pages where the async clipboard API is blocked.
+                            try {
+                                const textarea = document.createElement('textarea');
+                                textarea.value = value;
+                                textarea.setAttribute('readonly', '');
+                                textarea.style.position = 'fixed';
+                                textarea.style.top = '-1000px';
+                                textarea.style.opacity = '0';
+                                document.body.appendChild(textarea);
+                                textarea.select();
+                                const copied = document.execCommand('copy');
+                                document.body.removeChild(textarea);
+                                return copied;
+                            } catch (fallbackError) {
+                                return false;
+                            }
+                        });
                 },
-                args: [tab.url]
+                args: [url]
             });
 
-            Logger.log(`[URLCopy] Script injection completed for: ${tab.url}`);
-
-            // Notify sidebar of successful URL copy
-            try {
-                chrome.runtime.sendMessage({ action: "urlCopySuccess" });
-                Logger.log("[URLCopy] Success message sent to sidebar");
-            } catch (notifyError) {
-                Logger.log("[URLCopy] Could not notify sidebar:", notifyError);
+            // executeScript awaits a promise returned by func, so this IS the real result
+            // of the clipboard write rather than "the injection was dispatched".
+            if (injection && injection.result === true) {
+                Logger.log(`[URLCopy] Copied in-page: ${url}`);
+                notifyUrlCopied(url);
+                return;
             }
 
-            return;
-
+            Logger.log("[URLCopy] In-page copy reported failure, falling back to offscreen");
         } catch (injectionError) {
-            Logger.log("[URLCopy] Script injection failed, trying sidebar fallback:", injectionError);
+            Logger.log("[URLCopy] Script injection failed, falling back to offscreen:", injectionError);
         }
+    } else {
+        Logger.log(`[URLCopy] Restricted URL, skipping script injection: ${url}`);
+    }
 
-        // FALLBACK: Sidebar approach (works when sidebar is focused)
-        try {
-            const sidebarResponse = await new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => {
-                    reject(new Error("Sidebar timeout"));
-                }, 1000);
+    // FALLBACK: offscreen document. Works with the side panel closed and on every URL.
+    try {
+        await copyTextViaOffscreen(url);
+        Logger.log(`[URLCopy] Copied via offscreen document: ${url}`);
+        notifyUrlCopied(url);
+        return;
+    } catch (offscreenError) {
+        Logger.error("[URLCopy] Offscreen clipboard write failed:", offscreenError);
+    }
 
-                chrome.runtime.sendMessage({
-                    command: "copyCurrentUrl",
-                    url: tab.url
-                }, (response) => {
-                    clearTimeout(timeout);
-                    if (chrome.runtime.lastError) {
-                        reject(chrome.runtime.lastError);
-                    } else {
-                        resolve(response);
-                    }
-                });
-            });
-
-            Logger.log(`[URLCopy] Sidebar fallback succeeded: ${tab.url}`);
-        } catch (sidebarError) {
-            Logger.error("[URLCopy] Both script injection and sidebar failed:", sidebarError);
-        }
-
-    } catch (error) {
-        Logger.error("[URLCopy] Failed to copy URL:", error);
+    // LAST RESORT: the side panel, if it happens to be open, can still do the write.
+    try {
+        await chrome.runtime.sendMessage({ command: "copyCurrentUrl", url });
+        Logger.log(`[URLCopy] Side panel fallback succeeded: ${url}`);
+    } catch (sidePanelError) {
+        Logger.error("[URLCopy] Every clipboard path failed:", sidePanelError);
     }
 }
 

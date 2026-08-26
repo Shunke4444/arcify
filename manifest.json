@@ -16,7 +16,8 @@
     "search",
     "topSites",
     "history",
-    "clipboardWrite"
+    "clipboardWrite",
+    "offscreen"
   ],
   "side_panel": {
     "default_path": "sidebar.html"
@@ -94,7 +95,10 @@
       "description": "New Tab"
     },
     "copyCurrentUrl": {
-      "description": "Copy current tab URL"
+      "description": "Copy current tab URL",
+      "suggested_key": {
+        "default": "Alt+C"
+      }
     }
   },
   "options_page": "options.html"

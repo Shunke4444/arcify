@@ -78,6 +78,14 @@ function getExtensionPlugins(isDev = false) {
           await fs.copy('styles.css', `${outDir}/styles.css`);
         }
         
+        // Offscreen clipboard document. Plain script + HTML, copied verbatim: it has no
+        // imports, so there is nothing for rollup to bundle.
+        for (const offscreenFile of ['offscreen.html', 'offscreen.js']) {
+          if (await fs.pathExists(offscreenFile)) {
+            await fs.copy(offscreenFile, `${outDir}/${offscreenFile}`);
+          }
+        }
+        
         // Copy spotlight files except overlay.js (overlay is built separately), newtab.js (built separately), and popup files
         if (await fs.pathExists('spotlight')) {
           await fs.copy('spotlight', `${outDir}/spotlight`, {
