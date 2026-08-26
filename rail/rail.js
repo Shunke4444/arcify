@@ -59,6 +59,8 @@
     let refreshQueued = false;
     let width = DEFAULT_WIDTH_PX;
     let resizing = false;
+    let pointerInside = false;
+    let refreshPending = false;
 
     // ---------------------------------------------------------------- shadow root
 
@@ -499,12 +501,32 @@
 
     // Only fetch while visible; a background tab's rail does not need to stay current.
     function queueRefresh() {
-        if (!open || refreshQueued) return;
+        if (!open) return;
+
+        // Never rebuild the list while the pointer is inside the panel.
+        //
+        // render() replaces every row, and a click only fires when mousedown and mouseup
+        // land on the SAME element. Background tab churn - a title or favicon updating,
+        // which busy pages do constantly - was destroying the row mid-click, so clicks
+        // simply never completed. Defer until the pointer leaves.
+        if (pointerInside) {
+            refreshPending = true;
+            return;
+        }
+
+        if (refreshQueued) return;
         refreshQueued = true;
         requestAnimationFrame(() => {
             refreshQueued = false;
             refresh();
         });
+    }
+
+    // Refresh even though the pointer is inside: used right after an action the user just
+    // took, where redrawing is the expected outcome rather than an interruption.
+    function forceRefresh() {
+        refreshPending = false;
+        refresh();
     }
 
     // ---------------------------------------------------------------- rendering
@@ -571,9 +593,11 @@
             label.textContent = space.name;
 
             btn.append(dot, label);
-            btn.addEventListener('click', async () => {
+            btn.addEventListener('pointerdown', async (event) => {
+                if (event.button !== 0) return;
+                event.preventDefault();
                 await send('railSwitchSpace', { spaceId: space.id });
-                queueRefresh();
+                forceRefresh();
             });
             if (space.active) activeChip = btn;
             spacesEl.appendChild(btn);
@@ -596,7 +620,11 @@
             btn.className = 'pin-tab' + (tab.active ? ' active' : '');
             btn.title = tab.title;
             btn.appendChild(faviconFor(tab));
-            btn.addEventListener('click', () => send('railActivateTab', { tabId: tab.id }));
+            btn.addEventListener('pointerdown', (event) => {
+                if (event.button !== 0) return;
+                event.preventDefault();
+                send('railActivateTab', { tabId: tab.id });
+            });
             pinnedEl.appendChild(btn);
         }
 
@@ -622,14 +650,22 @@
             close.className = 'close';
             close.textContent = '×';
             close.title = 'Close tab';
-            close.addEventListener('click', async (event) => {
+            close.addEventListener('pointerdown', async (event) => {
+                if (event.button !== 0) return;
+                event.preventDefault();
                 event.stopPropagation();
                 await send('railCloseTab', { tabId: tab.id });
-                queueRefresh();
+                forceRefresh();
             });
 
             row.append(faviconFor(tab), label, close);
-            row.addEventListener('click', () => send('railActivateTab', { tabId: tab.id }));
+            // pointerdown, not click: acts on the press rather than requiring the row to
+            // still exist by the time the button comes back up.
+            row.addEventListener('pointerdown', (event) => {
+                if (event.button !== 0) return;
+                event.preventDefault();
+                send('railActivateTab', { tabId: tab.id });
+            });
             tabsEl.appendChild(row);
         }
     }
@@ -677,19 +713,33 @@
         refresh();
     }
 
-    function hideNow() {
+    // closeReason 'user' means the person actually dismissed it. Anything else is this
+    // document going away underneath the panel, which must NOT be reported as a close.
+    function hideNow(closeReason = 'user') {
         open = false;
         panel.classList.remove('open');
+        panel.classList.remove('instant');
         swatchesEl.classList.remove('open');
         paletteBtn.classList.remove('active');
-        send('railClosed');
+
+        if (closeReason === 'user') {
+            send('railClosed');
+        }
     }
 
     function scheduleHide() {
         // Dragging the edge drags the pointer outside the panel constantly.
         if (pinned || resizing) return;
+
+        // Switching tab fires mouseleave on the panel in the tab being LEFT, because the
+        // document is hidden while the pointer is still over it. Acting on that queued a
+        // close that then told the service worker this window no longer wants a rail -
+        // wiping the flag the handover depends on, so the NEXT switch had nothing to
+        // reopen. A hidden document has no business hiding anything.
+        if (document.visibilityState !== 'visible') return;
+
         clearTimeout(hideTimer);
-        hideTimer = setTimeout(hideNow, HIDE_DELAY_MS);
+        hideTimer = setTimeout(() => hideNow('user'), HIDE_DELAY_MS);
     }
 
     // Edge detection by pointer position rather than a hit-testing element. A fixed strip
@@ -707,8 +757,28 @@
         }
     }, { passive: true });
 
-    panel.addEventListener('mouseenter', () => clearTimeout(hideTimer));
-    panel.addEventListener('mouseleave', scheduleHide);
+    panel.addEventListener('mouseenter', () => {
+        pointerInside = true;
+        clearTimeout(hideTimer);
+    });
+
+    panel.addEventListener('mouseleave', () => {
+        pointerInside = false;
+        // Apply whatever was held back while the pointer was inside.
+        if (refreshPending) {
+            refreshPending = false;
+            queueRefresh();
+        }
+        scheduleHide();
+    });
+
+    // Leaving this tab: drop the panel silently, so returning to it is a clean re-open
+    // and the window-level open flag is left alone.
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') return;
+        clearTimeout(hideTimer);
+        if (open) hideNow('document-hidden');
+    });
 
     // Never sit on top of fullscreen video.
     document.addEventListener('fullscreenchange', () => {
@@ -716,7 +786,7 @@
         host.style.display = isFullscreen ? 'none' : '';
         if (isFullscreen) {
             clearTimeout(hideTimer);
-            hideNow();
+            hideNow('user');
         }
     });
 
@@ -730,7 +800,7 @@
             pinned = false;
             pinBtn.classList.remove('active');
             clearTimeout(hideTimer);
-            hideNow();
+            hideNow('user');
             return;
         }
 

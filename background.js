@@ -297,12 +297,32 @@ async function handOverRail(tabId, attempt = 0) {
 
     try {
         await chrome.tabs.sendMessage(tabId, { action: 'railOpenImmediately' });
+        return;
     } catch (error) {
+        // No listener. Either the script has not run yet, or the tab was loaded before the
+        // extension was last reloaded - content scripts only inject at page load, so an
+        // already-open tab keeps running whatever it had, or nothing at all. Injecting on
+        // demand makes the rail work in existing tabs without reloading every one of them.
+        if (attempt === 0) {
+            const tab = await chrome.tabs.get(tabId).catch(() => null);
+            if (tab && supportsContentScripts(tab.url)) {
+                try {
+                    await chrome.scripting.executeScript({
+                        target: { tabId },
+                        files: ['rail/rail.js']
+                    });
+                } catch (injectionError) {
+                    Logger.log('[Rail] Could not inject into tab', tabId, injectionError);
+                }
+            } else {
+                // brave://, the Web Store, a PDF, the newtab page. Nothing can run there.
+                return;
+            }
+        }
+
         if (attempt < 3) {
             setTimeout(() => handOverRail(tabId, attempt + 1), 120 * (attempt + 1));
         }
-        // Otherwise the destination has no content script at all - the newtab page, a
-        // brave:// page, the Web Store. Nothing to hand over to.
     }
 }
 
