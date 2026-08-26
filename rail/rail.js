@@ -22,7 +22,7 @@
     'use strict';
 
     // Bump on every behavioural change to this file.
-    const RAIL_VERSION = 11;
+    const RAIL_VERSION = 13;
 
     // Guard against double injection, but NOT against upgrades.
     //
@@ -135,12 +135,12 @@
 
             .panel {
                 position: fixed;
-                top: 8px;
-                left: 10px;
+                top: 0;
+                left: 0;
                 width: var(--rail-width, 215px);
                 /* Near full height, like Arc's sidebar - the width is what shrinks, not
                    the height. */
-                height: calc(100vh - 16px);
+                height: 100vh;
                 display: flex;
                 flex-direction: column;
                 gap: 10px;
@@ -148,8 +148,10 @@
                 box-sizing: border-box;
 
                 background: var(--space-bg, #cccccc);
-                border-radius: 14px;
-                box-shadow: 0 14px 44px rgba(0, 0, 0, 0.38);
+                /* Flush against the window edge like Arc's sidebar - only the inner
+                   corners are rounded. */
+                border-radius: 0 14px 14px 0;
+                box-shadow: 6px 0 32px rgba(0, 0, 0, 0.32);
 
                 color: #333;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -158,7 +160,7 @@
 
                 /* Hidden by default: translated out AND non-interactive, so a hidden rail
                    can never swallow a click meant for the page. */
-                transform: translateX(calc(-100% - 16px));
+                transform: translateX(-100%);
                 opacity: 0;
                 pointer-events: none;
                 /* Leaving: quick. */
@@ -509,9 +511,8 @@
 
     resizer.addEventListener('pointermove', (event) => {
         if (!resizing) return;
-        // The panel starts 8px from the viewport edge, so its right edge is at
-        // clientX - 8 relative to the panel's own box.
-        applyWidth(event.clientX - 8);
+        // The panel is flush to the edge, so its width is simply the pointer position.
+        applyWidth(event.clientX);
     });
 
     function endResize(event) {
@@ -531,13 +532,38 @@
 
     // ---------------------------------------------------------------- messaging
 
+    let orphaned = false;
+
+    // Reloading the extension invalidates this script's context. It keeps running - its
+    // listeners still fire, its panel is still on screen - but every chrome.* call throws
+    // and nothing it does can ever work again. Left alone it sits there reacting to the
+    // mouse and failing, which is indistinguishable from a broken rail.
+    function selfDestruct(reason) {
+        if (orphaned) return;
+        orphaned = true;
+        console.warn(`[ArcifyRail] orphaned (${reason}); removing this copy`);
+        try {
+            clearTimeout(hideTimer);
+            abort.abort();
+            host.remove();
+        } catch (error) {
+            // Nothing left to clean up.
+        }
+    }
+
     async function send(action, extra = {}) {
+        if (orphaned) return null;
+
         try {
             const response = await chrome.runtime.sendMessage({ action, ...extra });
-            console.log('[ArcifyRail] ->', action, extra, 'response:', response);
             return response;
         } catch (error) {
-            // Swallowing this is how an action disappears with no trace at all.
+            const message = String(error && error.message);
+            if (message.includes('Extension context invalidated') || !chrome.runtime?.id) {
+                selfDestruct(message);
+                return null;
+            }
+            // Worker asleep mid-send, or no receiver. Recoverable; keep going.
             console.warn('[ArcifyRail] send failed:', action, extra, error);
             return null;
         }
@@ -649,13 +675,7 @@
             label.textContent = space.name;
 
             btn.append(dot, label);
-            btn.addEventListener('pointerdown', async (event) => {
-                console.log('[ArcifyRail] space pointerdown', space.id, space.name);
-                if (event.button !== 0) return;
-                event.preventDefault();
-                await send('railSwitchSpace', { spaceId: space.id });
-                forceRefresh();
-            });
+            btn.dataset.spaceId = String(space.id);
             if (space.active) activeChip = btn;
             spacesEl.appendChild(btn);
         }
@@ -676,12 +696,8 @@
             const btn = document.createElement('button');
             btn.className = 'pin-tab' + (tab.active ? ' active' : '');
             btn.title = tab.title;
+            btn.dataset.tabId = String(tab.id);
             btn.appendChild(faviconFor(tab));
-            btn.addEventListener('pointerdown', (event) => {
-                if (event.button !== 0) return;
-                event.preventDefault();
-                send('railActivateTab', { tabId: tab.id });
-            });
             pinnedEl.appendChild(btn);
         }
 
@@ -698,6 +714,7 @@
             const row = document.createElement('div');
             row.className = 'tab' + (tab.active ? ' active' : '');
             row.title = tab.title;
+            row.dataset.tabId = String(tab.id);
 
             const label = document.createElement('span');
             label.className = 'tab-title';
@@ -707,23 +724,9 @@
             close.className = 'close';
             close.textContent = '×';
             close.title = 'Close tab';
-            close.addEventListener('pointerdown', async (event) => {
-                if (event.button !== 0) return;
-                event.preventDefault();
-                event.stopPropagation();
-                await send('railCloseTab', { tabId: tab.id });
-                forceRefresh();
-            });
+            close.dataset.action = 'close';
 
             row.append(faviconFor(tab), label, close);
-            // pointerdown, not click: acts on the press rather than requiring the row to
-            // still exist by the time the button comes back up.
-            row.addEventListener('pointerdown', (event) => {
-                console.log('[ArcifyRail] tab pointerdown', tab.id, 'button', event.button);
-                if (event.button !== 0) return;
-                event.preventDefault();
-                send('railActivateTab', { tabId: tab.id });
-            });
             tabsEl.appendChild(row);
         }
     }
@@ -814,31 +817,79 @@
         // Moving away from the edge while the panel is closed: nothing to do. While open,
         // the panel's own mouseleave handles it.
         if (!open || pinned || resizing) return;
-        if (Date.now() < holdOpenUntil) {
-            // Inside the grace window the pointer still counts as "in the panel" if it is
-            // anywhere over it, so a handover survives until the user really moves away.
-            if (event.clientX <= width + HIDE_MARGIN_PX) pointerInside = true;
-            return;
+
+        const inside = pointerIsOverPanel(event.clientX);
+
+        // Leaving the panel releases any refresh that was held back while inside it.
+        if (pointerInside && !inside && refreshPending) {
+            refreshPending = false;
+            queueRefresh();
         }
-        if (event.clientX > width + HIDE_MARGIN_PX) {
+        pointerInside = inside;
+
+        if (Date.now() < holdOpenUntil) return;
+
+        if (inside) {
+            clearTimeout(hideTimer);
+        } else {
             scheduleHide();
         }
     }, { passive: true, signal: abort.signal });
 
-    panel.addEventListener('mouseenter', () => {
-        pointerInside = true;
-        clearTimeout(hideTimer);
+    // Delegated on the PANEL, which is never replaced.
+    //
+    // Per-row listeners died with their rows: render() rebuilds the list with
+    // replaceChildren, and a page like Gmail emits tab updates constantly, so the row under
+    // the pointer could be swapped between being drawn and being pressed. Nothing was
+    // listening on the element that actually got the press - hence presses that produced no
+    // log line at all. Delegation survives any number of re-renders.
+    panel.addEventListener('pointerdown', async (event) => {
+        if (event.button !== 0) return;
+
+        const path = event.composedPath();
+        const hit = (selector) => path.find(
+            node => node instanceof Element && node.matches && node.matches(selector)
+        );
+
+        const closeBtn = hit('[data-action="close"]');
+        if (closeBtn) {
+            const row = hit('.tab');
+            event.preventDefault();
+            event.stopPropagation();
+            console.log('[ArcifyRail] close tab', row?.dataset.tabId);
+            await send('railCloseTab', { tabId: Number(row.dataset.tabId) });
+            forceRefresh();
+            return;
+        }
+
+        const tabEl = hit('.tab[data-tab-id]') || hit('.pin-tab[data-tab-id]');
+        if (tabEl) {
+            event.preventDefault();
+            console.log('[ArcifyRail] activate tab', tabEl.dataset.tabId);
+            send('railActivateTab', { tabId: Number(tabEl.dataset.tabId) });
+            return;
+        }
+
+        const spaceEl = hit('.space[data-space-id]');
+        if (spaceEl) {
+            event.preventDefault();
+            console.log('[ArcifyRail] switch space', spaceEl.dataset.spaceId);
+            await send('railSwitchSpace', { spaceId: Number(spaceEl.dataset.spaceId) });
+            forceRefresh();
+            return;
+        }
     });
 
-    panel.addEventListener('mouseleave', () => {
-        pointerInside = false;
-        // Apply whatever was held back while the pointer was inside.
-        if (refreshPending) {
-            refreshPending = false;
-            queueRefresh();
-        }
-        scheduleHide();
-    });
+    // Deliberately NOT mouseenter/mouseleave.
+    //
+    // Those fire as boundary events, and replacing the rows under the pointer - which
+    // render() does on every refresh - makes the browser emit them even though the pointer
+    // never moved. That is why the panel hid while the pointer was sitting at the far left,
+    // well inside it. Pointer position against the panel's own edge cannot lie.
+    function pointerIsOverPanel(clientX) {
+        // The panel is flush to the left and full height, so X alone decides it.
+        return clientX <= width + HIDE_MARGIN_PX;
+    }
 
     // Leaving this tab: drop the panel silently, so returning to it is a clean re-open
     // and the window-level open flag is left alone.
