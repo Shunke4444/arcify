@@ -203,6 +203,115 @@ async function groupNewTabIntoCurrentSpace(createdTab) {
     }
 }
 
+// --- Floating rail ------------------------------------------------------------
+//
+// The chrome.sidePanel sidebar cannot go below kMinSidePanelContentsWidth (320dip), which
+// is compiled into Chromium - no extension API, flag or setting moves it. The rail is a
+// content script instead, so it owns no browser chrome at all and can be any size.
+//
+// It renders per tab, so state has to come from here rather than from a single document.
+
+// Collect everything the rail needs in one round trip: the spaces in this window and the
+// tabs belonging to whichever one is active.
+async function getRailState(windowId) {
+    const targetWindowId = windowId ?? (await chrome.windows.getCurrent()).id;
+
+    const [groups, tabs, stored] = await Promise.all([
+        chrome.tabGroups.query({ windowId: targetWindowId }),
+        chrome.tabs.query({ windowId: targetWindowId }),
+        chrome.storage.local.get('spaces')
+    ]);
+
+    const storedSpaces = Array.isArray(stored.spaces) ? stored.spaces : [];
+    const activeTab = tabs.find(tab => tab.active);
+
+    // The active space is the group the active tab is in; fall back to the first group so
+    // the rail still shows something when focus is on an ungrouped or pinned tab.
+    const activeGroupId = activeTab && activeTab.groupId !== NO_GROUP
+        ? activeTab.groupId
+        : (groups[0]?.id ?? NO_GROUP);
+
+    const spaces = groups.map(group => ({
+        id: group.id,
+        name: group.title || storedSpaces.find(s => s.id === group.id)?.name || 'Space',
+        color: group.color,
+        active: group.id === activeGroupId
+    }));
+
+    const spaceTabs = tabs
+        .filter(tab => tab.groupId === activeGroupId && !tab.pinned)
+        .sort((a, b) => a.index - b.index)
+        .map(tab => ({
+            id: tab.id,
+            title: tab.title || tab.url || 'Untitled',
+            url: tab.url || '',
+            favIconUrl: tab.favIconUrl || '',
+            active: Boolean(tab.active)
+        }));
+
+    // Browser-pinned tabs are shared across every space, same as the favicon row in the
+    // side panel.
+    const pinned = tabs
+        .filter(tab => tab.pinned)
+        .sort((a, b) => a.index - b.index)
+        .map(tab => ({
+            id: tab.id,
+            title: tab.title || tab.url || 'Untitled',
+            favIconUrl: tab.favIconUrl || '',
+            active: Boolean(tab.active)
+        }));
+
+    return { spaces, tabs: spaceTabs, pinned };
+}
+
+// Switching space means activating a tab inside the target group, and letting the existing
+// collapse/expand behaviour follow from that.
+async function switchToSpaceFromRail(spaceId, windowId) {
+    const targetWindowId = windowId ?? (await chrome.windows.getCurrent()).id;
+    const groupTabs = await chrome.tabs.query({ groupId: spaceId, windowId: targetWindowId });
+
+    if (groupTabs.length === 0) {
+        Logger.log(`[Rail] Space ${spaceId} has no tabs to activate`);
+        return;
+    }
+
+    await chrome.tabGroups.update(spaceId, { collapsed: false }).catch(() => { });
+    await chrome.tabs.update(groupTabs[groupTabs.length - 1].id, { active: true });
+}
+
+// Tell every rail in this window that something moved. Rails that are not currently
+// rendered simply have no listener, so the send is allowed to fail.
+let railBroadcastPending = false;
+function broadcastRailUpdate() {
+    if (railBroadcastPending) return;
+    railBroadcastPending = true;
+
+    // Coalesce bursts - closing a group fires a lot of events at once.
+    setTimeout(async () => {
+        railBroadcastPending = false;
+        try {
+            const tabs = await chrome.tabs.query({});
+            for (const tab of tabs) {
+                chrome.tabs.sendMessage(tab.id, { action: 'railStateChanged' }).catch(() => { });
+            }
+        } catch (error) {
+            Logger.log('[Rail] Could not broadcast update:', error);
+        }
+    }, 120);
+}
+
+chrome.tabs.onActivated.addListener(broadcastRailUpdate);
+chrome.tabs.onRemoved.addListener(broadcastRailUpdate);
+chrome.tabs.onMoved.addListener(broadcastRailUpdate);
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (changeInfo.title || changeInfo.favIconUrl || changeInfo.groupId !== undefined) {
+        broadcastRailUpdate();
+    }
+});
+chrome.tabGroups.onCreated.addListener(broadcastRailUpdate);
+chrome.tabGroups.onRemoved.addListener(broadcastRailUpdate);
+chrome.tabGroups.onUpdated.addListener(broadcastRailUpdate);
+
 // Track tabs that have spotlight open for efficient closing.
 // Mainly used to close spotlight overlays in all tabs when it's
 // closed in 1 / user switches to another tab with overlay open.
@@ -888,6 +997,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             const activeSpace = spaces.find(space => space.id === activeTab.groupId);
             return { color: activeSpace?.color || 'purple' };
         }, sendResponse, 'getting active space color', { color: 'purple' });
+
+    } else if (message.action === 'railGetState') {
+        return handleAsyncMessage(async () => {
+            return await getRailState(sender.tab?.windowId);
+        }, sendResponse, 'getting rail state', { spaces: [], tabs: [] });
+
+    } else if (message.action === 'railActivateTab') {
+        return handleAsyncMessage(async () => {
+            await chrome.tabs.update(message.tabId, { active: true });
+            return {};
+        }, sendResponse, 'activating tab from rail');
+
+    } else if (message.action === 'railCloseTab') {
+        return handleAsyncMessage(async () => {
+            await chrome.tabs.remove(message.tabId);
+            return {};
+        }, sendResponse, 'closing tab from rail');
+
+    } else if (message.action === 'railSwitchSpace') {
+        return handleAsyncMessage(async () => {
+            await switchToSpaceFromRail(message.spaceId, sender.tab?.windowId);
+            return {};
+        }, sendResponse, 'switching space from rail');
+
+    } else if (message.action === 'railNewTab') {
+        return handleAsyncMessage(async () => {
+            await chrome.tabs.create({ active: true, windowId: sender.tab?.windowId });
+            return {};
+        }, sendResponse, 'creating tab from rail');
 
     } else if (message.action === 'performSearch') {
         return handleAsyncMessage(async () => {

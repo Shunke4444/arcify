@@ -13,13 +13,10 @@ import { SpotlightTabMode } from './shared/search-types.js';
 import { SharedSpotlightLogic } from './shared/shared-component-logic.js';
 import { Logger } from '../logger.js';
 
-// How long to keep trying to steal focus back from the omnibox before giving up.
-const FOCUS_DEADLINE_MS = 1000;
-
 /**
  * Hand the tab back to the browser's own new tab page.
  * background.js already implements 'navigateToDefaultNewTab' (chrome://new-tab-page/
- * with a chrome-search://local-ntp fallback) — reuse it rather than duplicating it.
+ * with a chrome-search://local-ntp fallback) - reuse it rather than duplicating it.
  */
 async function navigateToDefaultNewTab() {
     try {
@@ -32,86 +29,24 @@ async function navigateToDefaultNewTab() {
 /**
  * Focus the spotlight input.
  *
- * Chrome parks focus in the OMNIBOX on chrome_url_overrides newtab pages, and a bare
- * input.focus() from the page cannot reclaim it. Retry across a few frames and re-assert
- * when the document regains visibility or window focus. Bounded and self-terminating:
- * stops on the first success or after FOCUS_DEADLINE_MS, and removes its own listeners.
+ * CONFIRMED LIMITATION: when this page is reached via Ctrl+T it is the newtab OVERRIDE,
+ * and Chrome parks focus in the omnibox. A page cannot take it back - keystrokes go to the
+ * omnibox, not here. Retrying across frames was tried and does not win; the retry loop was
+ * removed rather than left in pretending to work.
+ *
+ * The attempt below is still worth making, because this same page is ALSO opened by
+ * fallbackToChromeTabs() via chrome.tabs.create() for restricted URLs. That is an ordinary
+ * navigation rather than the newtab override, and focus IS grantable there.
  */
 function focusInput(input) {
-    const deadline = performance.now() + FOCUS_DEADLINE_MS;
-    let frame = null;
-
-    const attempt = () => {
-        window.focus();
-        input.focus({ preventScroll: true });
-        return document.activeElement === input;
-    };
-
-    const cleanup = () => {
-        if (frame !== null) {
-            cancelAnimationFrame(frame);
-            frame = null;
+    input.focus({ preventScroll: true });
+    // One retry after layout settles; not a loop.
+    requestAnimationFrame(() => {
+        if (document.activeElement !== input) {
+            input.focus({ preventScroll: true });
         }
-        document.removeEventListener('visibilitychange', reassert);
-        window.removeEventListener('focus', reassert);
-    };
-
-    function reassert() {
-        if (document.visibilityState === 'visible' && attempt()) {
-            cleanup();
-        }
-    }
-
-    const tick = () => {
-        frame = null;
-        if (attempt() || performance.now() >= deadline) {
-            cleanup();
-            return;
-        }
-        frame = requestAnimationFrame(tick);
-    };
-
-    document.addEventListener('visibilitychange', reassert);
-    window.addEventListener('focus', reassert);
-    tick();
+    });
 }
-
-/**
- * Alt+L / Alt+T while this page is already in front must focus the input it already has,
- * not stack another newtab page on top of it. This page is an extension page, so
- * background.js broadcasts over chrome.runtime rather than chrome.tabs — match on tabId
- * so only the tab the shortcut fired in reacts.
- */
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (!message || message.action !== 'focusSpotlightInput') {
-        return;
-    }
-
-    (async () => {
-        try {
-            const currentTab = await chrome.tabs.getCurrent();
-            if (message.tabId && currentTab && currentTab.id !== message.tabId) {
-                sendResponse({ success: false, reason: 'not-target-tab' });
-                return;
-            }
-
-            const input = document.querySelector('.arcify-spotlight-input');
-            if (!input) {
-                sendResponse({ success: false, reason: 'input-not-ready' });
-                return;
-            }
-
-            input.select();
-            focusInput(input);
-            sendResponse({ success: true });
-        } catch (error) {
-            Logger.error('[NewTab Spotlight] Error focusing existing input:', error);
-            sendResponse({ success: false, error: error.message });
-        }
-    })();
-
-    return true; // Async response.
-});
 
 // Initialize spotlight on page load
 document.addEventListener('DOMContentLoaded', async () => {

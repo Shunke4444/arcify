@@ -78,6 +78,11 @@ function getExtensionPlugins(isDev = false) {
           await fs.copy('styles.css', `${outDir}/styles.css`);
         }
         
+        // Floating rail content script. Plain IIFE with no imports, copied verbatim.
+        if (await fs.pathExists('rail')) {
+          await fs.copy('rail', `${outDir}/rail`);
+        }
+        
         // Offscreen clipboard document. Plain script + HTML, copied verbatim: it has no
         // imports, so there is nothing for rollup to bundle.
         for (const offscreenFile of ['offscreen.html', 'offscreen.js']) {
