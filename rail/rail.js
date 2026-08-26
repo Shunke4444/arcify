@@ -22,7 +22,7 @@
     'use strict';
 
     // Bump on every behavioural change to this file.
-    const RAIL_VERSION = 9;
+    const RAIL_VERSION = 10;
 
     // Guard against double injection, but NOT against upgrades.
     //
@@ -68,6 +68,8 @@
 
     const HOST_ID = 'arcify-rail-host';
     const HIDE_DELAY_MS = 70;
+    // How long a freshly handed-over panel is immune from hiding.
+    const HANDOVER_GRACE_MS = 700;
     // How close to the left edge the pointer must get to summon the panel.
     const EDGE_TRIGGER_PX = 6;
     // How far past the panel's right edge the pointer must go before it hides. Kept
@@ -100,6 +102,10 @@
     let resizing = false;
     let pointerInside = false;
     let refreshPending = false;
+    // Wall-clock deadline before which nothing may hide the panel. A handover arrives with
+    // the pointer already over the panel but no mouseenter fired in this document, so
+    // pointerInside is false and the very first stray mousemove would close it again.
+    let holdOpenUntil = 0;
 
     // Everything bound outside the shadow root is registered with this signal, so a
     // teardown can remove the lot in one go. Listeners on the panel itself go with it.
@@ -783,6 +789,9 @@
         // Dragging the edge drags the pointer outside the panel constantly.
         if (pinned || resizing) return;
 
+        // Just handed over from another tab; give the pointer a moment to be counted.
+        if (Date.now() < holdOpenUntil) return;
+
         // Switching tab fires mouseleave on the panel in the tab being LEFT, because the
         // document is hidden while the pointer is still over it. Acting on that queued a
         // close that then told the service worker this window no longer wants a rail -
@@ -804,7 +813,14 @@
         }
         // Moving away from the edge while the panel is closed: nothing to do. While open,
         // the panel's own mouseleave handles it.
-        if (open && !pinned && !resizing && event.clientX > width + HIDE_MARGIN_PX) {
+        if (!open || pinned || resizing) return;
+        if (Date.now() < holdOpenUntil) {
+            // Inside the grace window the pointer still counts as "in the panel" if it is
+            // anywhere over it, so a handover survives until the user really moves away.
+            if (event.clientX <= width + HIDE_MARGIN_PX) pointerInside = true;
+            return;
+        }
+        if (event.clientX > width + HIDE_MARGIN_PX) {
             scheduleHide();
         }
     }, { passive: true, signal: abort.signal });
@@ -902,6 +918,8 @@
         if (message.action === 'railOpenImmediately') {
             // Appear already in place rather than animating in from off-screen.
             panel.classList.add('instant');
+            holdOpenUntil = Date.now() + HANDOVER_GRACE_MS;
+            clearTimeout(hideTimer);
             show();
             requestAnimationFrame(() => {
                 requestAnimationFrame(() => panel.classList.remove('instant'));
