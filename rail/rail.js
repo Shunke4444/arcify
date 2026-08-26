@@ -21,8 +21,31 @@
 (() => {
     'use strict';
 
-    // Guard against double injection (SPA navigations, re-injection after an update).
-    if (window.__arcifyRailLoaded) return;
+    // Bump on every behavioural change to this file.
+    const RAIL_VERSION = 7;
+
+    // Guard against double injection, but NOT against upgrades.
+    //
+    // The old guard was a bare boolean, so a page loaded before an extension reload kept
+    // running whatever build it started with FOREVER: reloading the extension does not
+    // touch content scripts already in a page, and re-injecting hit the guard and returned
+    // immediately. That is why stale builds appeared to survive a reload.
+    if (typeof window.__arcifyRailVersion === 'number' && window.__arcifyRailVersion >= RAIL_VERSION) {
+        return;
+    }
+
+    // An older build is resident. Shut it down as far as we can reach it - newer builds
+    // expose a teardown, older ones only left their host element behind.
+    if (typeof window.__arcifyRailTeardown === 'function') {
+        try {
+            window.__arcifyRailTeardown();
+        } catch (error) {
+            // Best effort.
+        }
+    }
+    document.getElementById('arcify-rail-host')?.remove();
+
+    window.__arcifyRailVersion = RAIL_VERSION;
     window.__arcifyRailLoaded = true;
 
     // Never render inside frames - one rail per tab, top document only.
@@ -61,6 +84,11 @@
     let resizing = false;
     let pointerInside = false;
     let refreshPending = false;
+
+    // Everything bound outside the shadow root is registered with this signal, so a
+    // teardown can remove the lot in one go. Listeners on the panel itself go with it.
+    const abort = new AbortController();
+    const listenerOpts = { signal: abort.signal };
 
     // ---------------------------------------------------------------- shadow root
 
@@ -755,7 +783,7 @@
         if (open && !pinned && !resizing && event.clientX > width + HIDE_MARGIN_PX) {
             scheduleHide();
         }
-    }, { passive: true });
+    }, { passive: true, signal: abort.signal });
 
     panel.addEventListener('mouseenter', () => {
         pointerInside = true;
@@ -778,7 +806,7 @@
         if (document.visibilityState === 'visible') return;
         clearTimeout(hideTimer);
         if (open) hideNow('document-hidden');
-    });
+    }, listenerOpts);
 
     // Never sit on top of fullscreen video.
     document.addEventListener('fullscreenchange', () => {
@@ -788,7 +816,7 @@
             clearTimeout(hideTimer);
             hideNow('user');
         }
-    });
+    }, listenerOpts);
 
     // Ctrl+S toggle.
     //
@@ -819,7 +847,7 @@
         event.preventDefault();
         event.stopPropagation();
         toggleRail();
-    }, true);
+    }, { capture: true, signal: abort.signal });
 
     pinBtn.addEventListener('click', () => {
         pinned = !pinned;
@@ -862,6 +890,13 @@
             return true;
         }
     });
+
+    // Let a future build retire this one properly rather than just orphaning its DOM.
+    window.__arcifyRailTeardown = () => {
+        clearTimeout(hideTimer);
+        abort.abort();
+        host.remove();
+    };
 
     // documentElement, not body: body may not exist yet and may be replaced by the page.
     document.documentElement.appendChild(host);

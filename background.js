@@ -288,6 +288,36 @@ async function switchToSpaceFromRail(spaceId, windowId) {
 //
 // Retried because the destination content script may not have loaded yet (a discarded
 // tab, or one still committing its first navigation).
+// Push the current build of the rail into every tab that can take it.
+//
+// Content scripts are injected at page load only, so reloading the extension leaves every
+// already-open tab running the build it started with. Re-injecting is safe: the script
+// version-guards itself and retires an older copy it finds.
+async function upgradeRailInOpenTabs() {
+    try {
+        const tabs = await chrome.tabs.query({});
+        await Promise.all(tabs.map(async (tab) => {
+            if (!tab.id || !supportsContentScripts(tab.url)) return;
+            try {
+                await chrome.scripting.executeScript({
+                    target: { tabId: tab.id },
+                    files: ['rail/rail.js']
+                });
+            } catch (error) {
+                // Tab discarded, still loading, or otherwise not scriptable right now.
+            }
+        }));
+        Logger.log('[Rail] Upgraded rail in open tabs');
+    } catch (error) {
+        Logger.log('[Rail] Could not upgrade open tabs:', error);
+    }
+}
+
+chrome.runtime.onInstalled.addListener(upgradeRailInOpenTabs);
+chrome.runtime.onStartup.addListener(upgradeRailInOpenTabs);
+// Also on plain service worker start, which is what a "Reload" on the extensions page does.
+upgradeRailInOpenTabs();
+
 // Which windows currently have their rail open. The rail is per tab, so switching tabs
 // means switching documents - without this, every tab switch looked like the rail closing.
 const railOpenByWindow = new Map();
