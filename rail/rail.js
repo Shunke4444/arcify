@@ -578,9 +578,28 @@
         queueRefresh();
     });
 
-    chrome.runtime.onMessage.addListener((message) => {
-        if (message && message.action === 'railStateChanged') {
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+        if (!message) return;
+
+        if (message.action === 'railStateChanged') {
             queueRefresh();
+            return;
+        }
+
+        // The rail in the tab we just came FROM was clicked. Clicking a tab moves the user
+        // to this document, and the panel would otherwise look like it closed - it was
+        // simply left behind in the other tab. Open here instead.
+        //
+        // Not pinned: the point is that it survives the action, not that it stays forever.
+        // The next mousemove away from the panel hides it, exactly like a hover-open.
+        if (message.action === 'railOpenImmediately') {
+            show();
+            // The pointer is already sitting over the panel area, but no mousemove has
+            // fired in this document yet, so nothing would keep it alive. Suppress the
+            // hide timer until the pointer actually moves somewhere.
+            clearTimeout(hideTimer);
+            sendResponse({ success: true });
+            return true;
         }
     });
 

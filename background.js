@@ -272,11 +272,34 @@ async function switchToSpaceFromRail(spaceId, windowId) {
 
     if (groupTabs.length === 0) {
         Logger.log(`[Rail] Space ${spaceId} has no tabs to activate`);
-        return;
+        return null;
     }
 
     await chrome.tabGroups.update(spaceId, { collapsed: false }).catch(() => { });
-    await chrome.tabs.update(groupTabs[groupTabs.length - 1].id, { active: true });
+
+    const target = groupTabs[groupTabs.length - 1];
+    await chrome.tabs.update(target.id, { active: true });
+    return target.id;
+}
+
+// Every rail action that changes the active tab moves the user to a DIFFERENT document,
+// and the rail lives per tab - so the panel appears to close when it was really left
+// behind. Hand it over: tell the newly active tab to open its own rail straight away.
+//
+// Retried because the destination content script may not have loaded yet (a discarded
+// tab, or one still committing its first navigation).
+async function handOverRail(tabId, attempt = 0) {
+    if (!tabId) return;
+
+    try {
+        await chrome.tabs.sendMessage(tabId, { action: 'railOpenImmediately' });
+    } catch (error) {
+        if (attempt < 3) {
+            setTimeout(() => handOverRail(tabId, attempt + 1), 120 * (attempt + 1));
+        }
+        // Otherwise the destination has no content script at all - the newtab page, a
+        // brave:// page, the Web Store. Nothing to hand over to.
+    }
 }
 
 // Tell every rail in this window that something moved. Rails that are not currently
@@ -1006,18 +1029,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else if (message.action === 'railActivateTab') {
         return handleAsyncMessage(async () => {
             await chrome.tabs.update(message.tabId, { active: true });
+            handOverRail(message.tabId);
             return {};
         }, sendResponse, 'activating tab from rail');
 
     } else if (message.action === 'railCloseTab') {
         return handleAsyncMessage(async () => {
+            const windowId = sender.tab?.windowId;
+            const closingActiveTab = sender.tab?.id === message.tabId;
+
             await chrome.tabs.remove(message.tabId);
+
+            // Closing the tab you are standing in moves you elsewhere; follow it.
+            if (closingActiveTab && windowId) {
+                const [next] = await chrome.tabs.query({ active: true, windowId });
+                if (next) handOverRail(next.id);
+            }
             return {};
         }, sendResponse, 'closing tab from rail');
 
     } else if (message.action === 'railSwitchSpace') {
         return handleAsyncMessage(async () => {
-            await switchToSpaceFromRail(message.spaceId, sender.tab?.windowId);
+            const activatedTabId = await switchToSpaceFromRail(message.spaceId, sender.tab?.windowId);
+            handOverRail(activatedTabId);
             return {};
         }, sendResponse, 'switching space from rail');
 
