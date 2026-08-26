@@ -563,6 +563,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.tabGroups.onCreated.addListener(handleTabGroupCreated);
     chrome.tabGroups.onUpdated.addListener(handleTabGroupUpdated);
 
+    // The space switcher has overflow-x: auto but its scrollbar is hidden, and a vertical
+    // wheel does nothing to a horizontal scroller. Spaces past the right edge were simply
+    // unreachable. Translate the wheel, and stop it reaching the swipe handler on
+    // #sidebar-container, which would otherwise change space instead of scrolling.
+    const spaceSwitcherEl = document.getElementById('spaceSwitcher');
+    if (spaceSwitcherEl) {
+        spaceSwitcherEl.addEventListener('wheel', (event) => {
+            const canScroll = spaceSwitcherEl.scrollWidth > spaceSwitcherEl.clientWidth;
+            if (!canScroll) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            spaceSwitcherEl.scrollLeft += event.deltaY !== 0 ? event.deltaY : event.deltaX;
+        }, { passive: false });
+    }
+
     // Setup Quick Pin listener
     setupQuickPinListener(moveTabToSpace, moveTabToPinned, moveTabToTemp, activeSpaceId, setActiveSpace, activatePinnedTabByURL);
 

@@ -141,13 +141,24 @@ export class BaseDataProvider {
     async getDefaultResults(mode) {
         const results = [];
 
+        // Open tabs first: switching to something already open is the common case.
         try {
-            // Show all open tabs for both modes when no query
             const openTabs = await this.getOpenTabs('');
             results.push(...openTabs);
         } catch (error) {
-            Logger.error('[SearchProvider] Error getting default results:', error);
+            Logger.error('[SearchProvider] Error getting default open tabs:', error);
         }
+
+        // Then recent history. Without this an empty box showed open tabs only, and if the
+        // tab query came back empty the panel fell straight through to "Start typing...".
+        try {
+            const history = await this.getHistorySuggestions('');
+            results.push(...history);
+        } catch (error) {
+            Logger.error('[SearchProvider] Error getting default history:', error);
+        }
+
+        Logger.log(`[SearchProvider] Default results: ${results.length}`);
 
         // Apply deduplication to default results as well
         return this.deduplicateResults(results);

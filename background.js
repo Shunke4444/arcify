@@ -119,6 +119,83 @@ chrome.commands.onCommand.addListener(async function (command) {
     }
 });
 
+// --- New tab placement -------------------------------------------------------
+//
+// sidebar.js has its own tabs.onCreated handler, but that code lives in the side panel
+// DOCUMENT, which only exists while the panel is open. With the panel closed nothing
+// grouped new tabs at all, so they piled up ungrouped until the next initSidebar() swept
+// every orphan into the group titled defaultSpaceName - the "everything ends up in Home"
+// bug. Grouping belongs in the service worker, which is always alive for this event.
+
+const NO_GROUP = -1;
+
+// Last tab the user was actually on, per window. A brand new tab becomes active
+// immediately, so "the active tab" is the new tab itself and cannot tell us where it
+// came from.
+const lastActiveTabByWindow = new Map();
+
+// Give the side panel and createNewSpace a moment to claim the tab first, so we never
+// race them into the wrong group.
+const NEW_TAB_GROUPING_DELAY_MS = 150;
+
+chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
+    lastActiveTabByWindow.set(windowId, tabId);
+});
+
+chrome.tabs.onCreated.addListener((tab) => {
+    if (!tab || tab.pinned) return;
+    setTimeout(() => groupNewTabIntoCurrentSpace(tab), NEW_TAB_GROUPING_DELAY_MS);
+});
+
+// Resolve which group a newly created tab belongs to, best source first.
+async function resolveGroupForNewTab(tab, openerTabId) {
+    // 1. The tab it was opened from (middle-click, target=_blank, "open in new tab").
+    if (openerTabId) {
+        const opener = await chrome.tabs.get(openerTabId).catch(() => null);
+        if (opener && opener.windowId === tab.windowId && opener.groupId !== NO_GROUP) {
+            return opener.groupId;
+        }
+    }
+
+    // 2. The tab the user was on before this one stole focus.
+    const previousId = lastActiveTabByWindow.get(tab.windowId);
+    if (previousId && previousId !== tab.id) {
+        const previous = await chrome.tabs.get(previousId).catch(() => null);
+        if (previous && previous.groupId !== NO_GROUP) {
+            return previous.groupId;
+        }
+    }
+
+    // 3. The neighbour immediately to the left. Survives a service worker restart, which
+    //    wipes the map above.
+    const windowTabs = await chrome.tabs.query({ windowId: tab.windowId });
+    const neighbour = windowTabs
+        .filter(t => t.id !== tab.id && !t.pinned && t.index < tab.index && t.groupId !== NO_GROUP)
+        .sort((a, b) => b.index - a.index)[0];
+
+    return neighbour ? neighbour.groupId : NO_GROUP;
+}
+
+async function groupNewTabIntoCurrentSpace(createdTab) {
+    try {
+        const tab = await chrome.tabs.get(createdTab.id).catch(() => null);
+
+        // Someone already claimed it - the side panel, or createNewSpace building a space.
+        if (!tab || tab.pinned || tab.groupId !== NO_GROUP) return;
+
+        const groupId = await resolveGroupForNewTab(tab, createdTab.openerTabId);
+        if (groupId === NO_GROUP) {
+            Logger.log(`[NewTab] No space to put tab ${tab.id} in, leaving it ungrouped`);
+            return;
+        }
+
+        await chrome.tabs.group({ tabIds: tab.id, groupId });
+        Logger.log(`[NewTab] Grouped tab ${tab.id} into space ${groupId}`);
+    } catch (error) {
+        Logger.log('[NewTab] Could not group new tab:', error);
+    }
+}
+
 // Track tabs that have spotlight open for efficient closing.
 // Mainly used to close spotlight overlays in all tabs when it's
 // closed in 1 / user switches to another tab with overlay open.
