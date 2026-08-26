@@ -1087,6 +1087,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     } else if (message.action === 'railActivateTab') {
         return handleAsyncMessage(async () => {
+            Logger.log('[Rail] activate tab', message.tabId, 'from', sender.tab?.id);
             await chrome.tabs.update(message.tabId, { active: true });
             handOverRail(message.tabId);
             return {};
@@ -1109,6 +1110,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     } else if (message.action === 'railSwitchSpace') {
         return handleAsyncMessage(async () => {
+            Logger.log('[Rail] switch space', message.spaceId, 'window', sender.tab?.windowId);
             const activatedTabId = await switchToSpaceFromRail(message.spaceId, sender.tab?.windowId);
             handOverRail(activatedTabId);
             return {};

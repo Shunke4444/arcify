@@ -22,7 +22,7 @@
     'use strict';
 
     // Bump on every behavioural change to this file.
-    const RAIL_VERSION = 8;
+    const RAIL_VERSION = 9;
 
     // Guard against double injection, but NOT against upgrades.
     //
@@ -30,7 +30,22 @@
     // running whatever build it started with FOREVER: reloading the extension does not
     // touch content scripts already in a page, and re-injecting hit the guard and returned
     // immediately. That is why stale builds appeared to survive a reload.
-    if (typeof window.__arcifyRailVersion === 'number' && window.__arcifyRailVersion >= RAIL_VERSION) {
+    // A resident copy only counts if its extension context is still ALIVE. Reloading the
+    // extension invalidates every already-injected script: its chrome.* calls start
+    // throwing "Extension context invalidated", so the panel is still on screen and every
+    // click silently does nothing. Version alone would let that corpse block its
+    // replacement, which looks exactly like "no action is being rendered".
+    const residentIsAlive = (() => {
+        try {
+            return typeof window.__arcifyRailAlive === 'function' && window.__arcifyRailAlive() === true;
+        } catch (error) {
+            return false;
+        }
+    })();
+
+    if (residentIsAlive
+        && typeof window.__arcifyRailVersion === 'number'
+        && window.__arcifyRailVersion >= RAIL_VERSION) {
         return;
     }
 
@@ -512,9 +527,12 @@
 
     async function send(action, extra = {}) {
         try {
-            return await chrome.runtime.sendMessage({ action, ...extra });
+            const response = await chrome.runtime.sendMessage({ action, ...extra });
+            console.debug('[ArcifyRail] ->', action, extra, 'response:', response);
+            return response;
         } catch (error) {
-            // Service worker asleep or extension reloading. Nothing useful to do.
+            // Swallowing this is how an action disappears with no trace at all.
+            console.warn('[ArcifyRail] send failed:', action, extra, error);
             return null;
         }
     }
@@ -626,6 +644,7 @@
 
             btn.append(dot, label);
             btn.addEventListener('pointerdown', async (event) => {
+                console.debug('[ArcifyRail] space pointerdown', space.id, space.name);
                 if (event.button !== 0) return;
                 event.preventDefault();
                 await send('railSwitchSpace', { spaceId: space.id });
@@ -694,6 +713,7 @@
             // pointerdown, not click: acts on the press rather than requiring the row to
             // still exist by the time the button comes back up.
             row.addEventListener('pointerdown', (event) => {
+                console.debug('[ArcifyRail] tab pointerdown', tab.id, 'button', event.button);
                 if (event.button !== 0) return;
                 event.preventDefault();
                 send('railActivateTab', { tabId: tab.id });
@@ -901,6 +921,17 @@
         abort.abort();
         host.remove();
     };
+
+    // Lets a later injection tell a live copy from an invalidated one.
+    window.__arcifyRailAlive = () => {
+        try {
+            return Boolean(chrome.runtime && chrome.runtime.id);
+        } catch (error) {
+            return false;
+        }
+    };
+
+    console.debug(`[ArcifyRail] v${RAIL_VERSION} attached`);
 
     // documentElement, not body: body may not exist yet and may be replaced by the page.
     document.documentElement.appendChild(host);
