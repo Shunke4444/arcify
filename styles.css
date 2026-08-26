@@ -24,12 +24,49 @@
     --chrome-pink-color-dark: color-mix(in srgb, var(--chrome-pink-color) 75%, black);
     --chrome-purple-color-dark: color-mix(in srgb, var(--chrome-purple-color) 80%, black);
     --chrome-cyan-color-dark: color-mix(in srgb, var(--chrome-cyan-color) 80%, black);
+
+    /* --- Typography ------------------------------------------------------ */
+    --font-stack: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+        Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+    --font-size-base: 13.5px;
+    --font-size-sm: 12px;
+    --font-size-xs: 11px;
+    --font-size-lg: 15px;
+    --font-weight-normal: 500;
+    --font-weight-strong: 600;
+
+    /* --- Density ---------------------------------------------------------
+       Change --row-min-h and --row-btn together: the close button, not the
+       padding, is what sets the floor on a tab row's height. */
+    --tab-py: 4px;
+    --tab-px: 12px;
+    --row-min-h: 30px;
+    --row-btn: 24px;
+    --row-btn-glyph: 18px;
+    --fav-w: 32px;
+    --fav-h: 40px;
+    --fav-img: 20px;
+    --folder-py: 6px;
+    --folder-px: 12px;
+    --sidebar-py: 12px;
+    --sidebar-px: 8px;
+    --sidebar-gap: 12px;
+
+    /* --- Surfaces ---------------------------------------------------------
+       These six were referenced all over the file but never defined anywhere,
+       so every call site silently fell through to its inline fallback. */
+    --sidebar-bg: #f7f7f7;
+    --sidebar-secondary-bg: rgba(0, 0, 0, 0.02);
+    --sidebar-border-color: rgba(0, 0, 0, 0.08);
+    --sidebar-text-color: #222;
+    --sidebar-text-color-light: #6b6b6b;
+    --tab-hover-bg: rgba(0, 0, 0, 0.05);
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
-    font-size: 0.8rem;
-    font-weight: 500;
+    font-family: var(--font-stack);
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-normal);
     color: #333;
     height: 100vh;
     overflow: hidden;
@@ -81,11 +118,11 @@ h3 {
 
 .sidebar-container {
     background-color: var(--space-bg-color, rgba(255, 255, 255, 0.1));
-    padding: 16px 8px;
+    padding: var(--sidebar-py) var(--sidebar-px);
     display: flex;
     flex-direction: column;
     height: 100%;
-    gap: 16px;
+    gap: var(--sidebar-gap);
     overflow-y: hidden;
     transition: background-color 0.3s ease;
 }
@@ -93,8 +130,6 @@ h3 {
 .pinned-favicons {
     display: flex;
     flex-wrap: wrap;
-    gap: 12px;
-    /* padding: 8px; */
     border-radius: 12px;
     /* background-color: rgba(255, 255, 255, 0.1); */
     gap: 8px;
@@ -102,8 +137,8 @@ h3 {
 }
 
 .pinned-favicon {
-    width: 32px;
-    height: 48px;
+    width: var(--fav-w);
+    height: var(--fav-h);
     flex: 1 1 24%;
     border-radius: 8px;
     cursor: pointer;
@@ -126,8 +161,8 @@ h3 {
 }
 
 .pinned-favicon img {
-    width: 20px;
-    height: 20px;
+    width: var(--fav-img);
+    height: var(--fav-img);
     object-fit: contain;
 }
 
@@ -282,10 +317,12 @@ h3 {
 
 .space-name {
     flex-grow: 1;
+    width: 100%;
+    min-width: 0;
     background: none;
     border: none;
-    font-size: 16px;
-    font-weight: 600;
+    font-size: var(--font-size-lg);
+    font-weight: var(--font-weight-strong);
     color: #333;
     padding: 4px 0;
     border-radius: 4px;
@@ -470,7 +507,8 @@ h3 {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    font-weight: 600;
+    font-size: inherit;
+    font-weight: var(--font-weight-strong);
 }
 
 .folder-title.hidden {
@@ -480,7 +518,7 @@ h3 {
 .folder-header {
     display: flex;
     align-items: center;
-    padding: 8px 12px;
+    padding: var(--folder-py) var(--folder-px);
     /* background-color: rgba(255, 255, 255, 0.2); */
     /* border-bottom: 1px solid rgba(0, 0, 0, 0.1); */
 }
@@ -498,9 +536,12 @@ h3 {
 
 .folder-name {
     flex: 1;
+    width: 100%;
+    min-width: 0;
     background: none;
     border: none;
-    font-size: 14px;
+    font-size: inherit;
+    font-weight: var(--font-weight-strong);
     color: #333;
     padding: 4px;
     border-radius: 4px;
@@ -549,12 +590,37 @@ h3 {
 }
 
 .folder-content {
-    padding: 0px 12px;
+    padding: 0 var(--folder-px);
     display: flex;
     flex-direction: column;
     min-height: 12px;
     /* gap: 8px; */
     /* background-color: rgba(1, 1, 1, 0.1); */
+}
+
+/* Nested folders.
+   Depth used to be conveyed only by .folder-content's 12px padding compounding, with every
+   level sharing one background and no border - three levels deep read as a flat wash.
+   Nested levels get their own surface, a rule down the left, and tighter horizontal padding
+   so the 24px-per-level budget does not eat the whole panel. */
+.folder .folder {
+    border-left: 1px solid var(--sidebar-border-color);
+    border-radius: 8px;
+    background: var(--sidebar-secondary-bg);
+    margin-top: 2px;
+}
+
+.folder .folder>.folder-header {
+    padding-left: calc(var(--folder-px) - 4px);
+}
+
+.folder .folder .folder-content {
+    padding-left: calc(var(--folder-px) - 4px);
+    padding-right: calc(var(--folder-px) / 2);
+}
+
+.folder.dragging {
+    opacity: 0.5;
 }
 
 .folder-content.collapsed {
@@ -578,7 +644,8 @@ h3 {
     justify-content: center;
     color: rgba(0, 0, 0, 0.5);
     align-items: center;
-    padding: 4px 12px;
+    padding: var(--tab-py) var(--tab-px);
+    min-height: var(--row-min-h);
     margin-bottom: 8px;
     border-radius: 8px;
     z-index: 0;
@@ -659,7 +726,7 @@ h3 {
 
 .tabs-container {
     min-height: 60px;
-    margin-top: 4px;
+    margin-top: var(--tab-py);
     background: var(--space-bg-color);
     /* border-radius: 8px;
     background-color: rgba(255, 255, 255, 0.1);
@@ -818,7 +885,8 @@ h3 {
 .tab {
     display: flex;
     align-items: center;
-    padding: 4px 12px;
+    padding: var(--tab-py) var(--tab-px);
+    min-height: var(--row-min-h);
     margin-bottom: 4px;
     border-radius: 12px;
     cursor: pointer;
@@ -926,8 +994,7 @@ h3 {
 }
 
 .tab-domain-display {
-    font-size: 0.75em;
-    /* Smaller font size */
+    font-size: var(--font-size-xs);
     opacity: 0.8;
     white-space: nowrap;
     overflow: hidden;
@@ -952,12 +1019,12 @@ h3 {
 }
 
 .tab-restore {
-    width: 28px;
-    height: 28px;
+    width: var(--row-btn);
+    height: var(--row-btn);
     border: none;
     background: none;
     color: rgba(0, 0, 0, 0.5);
-    font-size: 22px;
+    font-size: var(--row-btn-glyph);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -968,12 +1035,12 @@ h3 {
 
 .tab-close,
 .tab-remove {
-    width: 28px;
-    height: 28px;
+    width: var(--row-btn);
+    height: var(--row-btn);
     border: none;
     background: none;
     color: rgba(0, 0, 0, 0.5);
-    font-size: 22px;
+    font-size: var(--row-btn-glyph);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -1070,11 +1137,13 @@ h3 {
 
 #newSpaceName {
     flex: 1;
+    width: 100%;
+    min-width: 0;
     background-color: rgba(255, 255, 255, 0.6);
     border: none;
     border-radius: 8px;
     padding: 8px 12px;
-    font-size: 14px;
+    font-size: var(--font-size-base);
     color: #333;
     outline: none;
     transition: background-color 0.3s ease;
@@ -1183,8 +1252,7 @@ h3 {
     align-items: center;
     /* Center vertically */
     padding: 2rem;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
-    /* Ensure font is applied */
+    font-family: var(--font-stack);
     color: var(--options-text-color);
     /* Ensure base text color */
 }
@@ -1850,7 +1918,7 @@ h3 {
 }
 
 .pinned-placeholder-container {
-    padding: 8px 16px;
+    padding: var(--folder-py) var(--folder-px);
     text-align: center;
     width: 100%;
     transition: background-color 0.2s ease;
@@ -1870,7 +1938,7 @@ h3 {
 
 .pinned-tab-placeholder {
     color: rgba(0, 0, 0, 0.5);
-    padding: 20px;
+    padding: calc(var(--folder-py) * 2) var(--folder-px);
     border: 2px dashed rgba(0, 0, 0, 0.1);
     border-radius: 8px;
     background: var(--sidebar-secondary-bg, rgba(0, 0, 0, 0.02));
@@ -1937,6 +2005,14 @@ h3 {
         --chrome-pink-color-dark: color-mix(in srgb, var(--chrome-pink-color) 60%, black);
         --chrome-purple-color-dark: color-mix(in srgb, var(--chrome-purple-color) 65%, black);
         --chrome-cyan-color-dark: color-mix(in srgb, var(--chrome-cyan-color) 65%, black);
+
+        /* Surface tokens, dark counterparts */
+        --sidebar-bg: #202124;
+        --sidebar-secondary-bg: rgba(255, 255, 255, 0.04);
+        --sidebar-border-color: rgba(255, 255, 255, 0.12);
+        --sidebar-text-color: #ECEFF1;
+        --sidebar-text-color-light: rgba(236, 239, 241, 0.6);
+        --tab-hover-bg: rgba(255, 255, 255, 0.08);
     }
 
     /* Dark mode text colors */
