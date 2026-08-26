@@ -17,10 +17,17 @@ export class SpotlightMessageClient {
 
             if (response && response.success) {
                 return response.results;
+            }
+
+            // An undefined response means the background never answered - a dropped
+            // message channel, not an empty result set. Distinguishing the two is the
+            // difference between "nothing matched" and a silently broken spotlight.
+            if (response === undefined) {
+                Logger.error('[SpotlightMessageClient] No response from background for', message.action);
             } else {
                 Logger.error('[SpotlightMessageClient] Get suggestions failed:', response?.error);
-                return [];
             }
+            return [];
         } catch (error) {
             Logger.error('[SpotlightMessageClient] Get suggestions error:', error);
             return [];

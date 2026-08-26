@@ -90,12 +90,15 @@ async function updateBookmarkForTab(tab, bookmarkTitle) {
         // Fallback: search by pinned URL (not tab.url!) and only update title.
         const pinnedUrl = pinnedState?.pinnedUrl;
         if (!pinnedUrl) continue;
-        const bookmarks = await chrome.bookmarks.getChildren(spaceFolder.id);
-        Logger.log("looking for bookmarks", bookmarks);
-        const bookmark = BookmarkUtils.findBookmarkByUrl(bookmarks, pinnedUrl);
-        if (bookmark) {
-            await chrome.bookmarks.update(bookmark.id, { title: bookmarkTitle });
-            await Utils.setPinnedTabState(tab.id, { bookmarkId: bookmark.id, pinnedUrl: pinnedUrl });
+
+        // Recursive: getChildren() only returns DIRECT children, so a pinned tab living
+        // inside a folder was never found here. The rename then never reached the
+        // bookmark and reverted on the next reload (#49).
+        const match = await BookmarkUtils.findBookmarkInFolderRecursive(spaceFolder.id, { url: pinnedUrl });
+        if (match?.bookmark) {
+            await chrome.bookmarks.update(match.bookmark.id, { title: bookmarkTitle });
+            await Utils.setPinnedTabState(tab.id, { bookmarkId: match.bookmark.id, pinnedUrl: pinnedUrl });
+            Logger.log(`[Bookmarks] Renamed pinned bookmark ${match.bookmark.id} to "${bookmarkTitle}"`);
             return;
         }
     }
@@ -3031,7 +3034,15 @@ async function createTabElement(tab, isPinned = false, isBookmarkOnly = false) {
             titleInput.focus(); // Focus the input
         });
 
+        // Enter and Escape both call blur(), and the blur handler saves. Without this
+        // latch, Escape cancelled and then immediately re-saved - so Escape committed the
+        // rename it was supposed to discard. Same defect as the folder name editor.
+        let editSettled = false;
+
         const saveOrCancelEdit = async (save) => {
+            if (editSettled) return;
+            editSettled = true;
+
             if (save) {
                 const newName = titleInput.value.trim();
                 try {

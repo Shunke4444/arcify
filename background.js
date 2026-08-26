@@ -79,14 +79,21 @@ if (chrome.contextMenus) {
 }
 
 // Listen for messages from the content script (sidebar)
-chrome.runtime.onMessage.addListener(async function (request, sender, sendResponse) {
+// NOTE: deliberately NOT async. An async listener returns a Promise, and Chrome only
+// keeps the response channel open when a listener returns literally `true` - a Promise is
+// not it. Chrome also warns about it. This listener never responds, so the work is simply
+// fired off and its failures logged.
+chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     // Forward the pin toggle command to the sidebar
     if (request.command === "toggleSpacePin") {
-        chrome.runtime.sendMessage({ command: "toggleSpacePin", tabId: request.tabId });
+        chrome.runtime.sendMessage({ command: "toggleSpacePin", tabId: request.tabId })
+            .catch(() => { /* no side panel listening */ });
     } else if (request.command === "toggleSpotlight") {
-        await injectSpotlightScript(SpotlightTabMode.CURRENT_TAB);
+        injectSpotlightScript(SpotlightTabMode.CURRENT_TAB)
+            .catch(error => Logger.error('[Background] toggleSpotlight failed:', error));
     } else if (request.command === "toggleSpotlightNewTab") {
-        await injectSpotlightScript(SpotlightTabMode.NEW_TAB);
+        injectSpotlightScript(SpotlightTabMode.NEW_TAB)
+            .catch(error => Logger.error('[Background] toggleSpotlightNewTab failed:', error));
     }
 });
 
