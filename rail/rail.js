@@ -22,7 +22,7 @@
     'use strict';
 
     // Bump on every behavioural change to this file.
-    const RAIL_VERSION = 10;
+    const RAIL_VERSION = 11;
 
     // Guard against double injection, but NOT against upgrades.
     //
@@ -534,7 +534,7 @@
     async function send(action, extra = {}) {
         try {
             const response = await chrome.runtime.sendMessage({ action, ...extra });
-            console.debug('[ArcifyRail] ->', action, extra, 'response:', response);
+            console.log('[ArcifyRail] ->', action, extra, 'response:', response);
             return response;
         } catch (error) {
             // Swallowing this is how an action disappears with no trace at all.
@@ -650,7 +650,7 @@
 
             btn.append(dot, label);
             btn.addEventListener('pointerdown', async (event) => {
-                console.debug('[ArcifyRail] space pointerdown', space.id, space.name);
+                console.log('[ArcifyRail] space pointerdown', space.id, space.name);
                 if (event.button !== 0) return;
                 event.preventDefault();
                 await send('railSwitchSpace', { spaceId: space.id });
@@ -719,7 +719,7 @@
             // pointerdown, not click: acts on the press rather than requiring the row to
             // still exist by the time the button comes back up.
             row.addEventListener('pointerdown', (event) => {
-                console.debug('[ArcifyRail] tab pointerdown', tab.id, 'button', event.button);
+                console.log('[ArcifyRail] tab pointerdown', tab.id, 'button', event.button);
                 if (event.button !== 0) return;
                 event.preventDefault();
                 send('railActivateTab', { tabId: tab.id });
@@ -949,7 +949,7 @@
         }
     };
 
-    console.debug(`[ArcifyRail] v${RAIL_VERSION} attached`);
+    console.log(`[ArcifyRail] v${RAIL_VERSION} attached`);
 
     // documentElement, not body: body may not exist yet and may be replaced by the page.
     document.documentElement.appendChild(host);
