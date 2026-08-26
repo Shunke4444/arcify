@@ -51,6 +51,10 @@ const spaceTemplate = document.getElementById('spaceTemplate');
 // Global state
 let spaces = [];
 let activeSpaceId = null;
+// initSidebar() is fired without await and the tabGroups listeners are registered right
+// after it, so the groups init creates would otherwise race into handleTabGroupCreated and
+// leave duplicate space elements behind.
+let isInitialisingSidebar = true;
 let previousSpaceId = null;
 let isCreatingSpace = false;
 let isOpeningBookmark = false;
@@ -556,6 +560,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.tabs.onMoved.addListener(handleTabMove);
     chrome.tabs.onActivated.addListener(handleTabActivated);
     chrome.tabGroups.onRemoved.addListener(handleTabGroupRemoved);
+    chrome.tabGroups.onCreated.addListener(handleTabGroupCreated);
+    chrome.tabGroups.onUpdated.addListener(handleTabGroupUpdated);
 
     // Setup Quick Pin listener
     setupQuickPinListener(moveTabToSpace, moveTabToPinned, moveTabToTemp, activeSpaceId, setActiveSpace, activatePinnedTabByURL);
@@ -631,8 +637,13 @@ async function initSidebar() {
             // ignore
         }
 
-        let tabGroups = await chrome.tabGroups.query({});
+        // Scope to THIS window. tabs.query below is already currentWindow-only, so an
+        // all-windows group query produced spaces backed by groups this panel cannot see.
+        let tabGroups = await chrome.tabGroups.query({ windowId: currentWindow.id });
         let allTabs = await chrome.tabs.query({ currentWindow: true });
+
+        // Group ids are ephemeral across restarts, so carry uuids over from the last save.
+        const storedSpaces = await getStoredSpaces();
         Logger.log("tabGroups", tabGroups);
         Logger.log("allTabs", allTabs);
 
@@ -662,7 +673,7 @@ async function initSidebar() {
             // Create default space with UUID
             const defaultSpace = {
                 id: groupId,
-                uuid: Utils.generateUUID(),
+                uuid: reuseSpaceUuid(storedSpaces, { id: groupId, title: defaultSpaceName }),
                 name: defaultSpaceName,
                 color: groupColor,
                 spaceBookmarks: [],
@@ -708,7 +719,7 @@ async function initSidebar() {
                 }
             }
 
-            tabGroups = await chrome.tabGroups.query({});
+            tabGroups = await chrome.tabGroups.query({ windowId: currentWindow.id });
 
             // Load existing tab groups as spaces
             spaces = await Promise.all(tabGroups.map(async group => {
@@ -737,7 +748,7 @@ async function initSidebar() {
                 }
                 const space = {
                     id: group.id,
-                    uuid: Utils.generateUUID(),
+                    uuid: reuseSpaceUuid(storedSpaces, group),
                     name: group.title,
                     color: group.color,
                     spaceBookmarks: spaceBookmarks,
@@ -774,6 +785,8 @@ async function initSidebar() {
         }
     } catch (error) {
         Logger.error('Error initializing sidebar:', error);
+    } finally {
+        isInitialisingSidebar = false;
     }
 
     setupDOMElements(createNewSpace);
@@ -859,11 +872,13 @@ function createSpaceElement(space) {
         const oldFolder = await LocalStorage.getOrCreateSpaceFolder(oldName);
         await chrome.bookmarks.update(oldFolder.id, { title: nameInput.value });
 
-        const tabGroups = await chrome.tabGroups.query({});
+        const tabGroups = await chrome.tabGroups.query(currentWindow ? { windowId: currentWindow.id } : {});
         const tabGroupForSpace = tabGroups.find(group => group.id === space.id);
         Logger.log("updating tabGroupForSpace", tabGroupForSpace);
         if (tabGroupForSpace) {
-            await chrome.tabGroups.update(tabGroupForSpace.id, { title: nameInput.value, color: 'grey' });
+            // Keep the existing colour — hardcoding 'grey' here wiped the space's colour
+            // every time it was renamed.
+            await chrome.tabGroups.update(tabGroupForSpace.id, { title: nameInput.value, color: space.color });
         }
 
         space.name = nameInput.value;
@@ -1284,7 +1299,10 @@ async function setActiveSpace(spaceId, updateTab = true) {
     // Centralize logic in our new helper function
     await activateSpaceInDOM(spaceId, spaces, updateSpaceSwitcher);
 
-    let tabGroups = await chrome.tabGroups.query({});
+    // Only this window's groups. Collapsing every window's groups meant switching spaces
+    // here reached into windows the user was not even looking at.
+    const scopedQuery = currentWindow ? { windowId: currentWindow.id } : {};
+    let tabGroups = await chrome.tabGroups.query(scopedQuery);
     let tabGroupsToClose = tabGroups.filter(group => group.id !== spaceId);
 
     // Use a proper async loop instead of forEach
@@ -2042,6 +2060,71 @@ async function handleArcifyOrderChangeAfterDropByTabId(tabId, container) {
     await reconcileSpaceTabOrdering(spaceId, { source: 'arcify', movedTabId: tabId });
 }
 
+/**
+ * Make a folder draggable so it can be nested inside another folder.
+ *
+ * The existing handlers are tab-centric: they only ever resolved .folder-content as a drop
+ * TARGET. Nothing was ever draggable except tabs.
+ */
+function setupFolderDragHandlers(folderElement) {
+    folderElement.draggable = true;
+
+    folderElement.addEventListener('dragstart', (e) => {
+        // dragstart bubbles from the tabs inside this folder - only claim our own.
+        if (e.target !== folderElement) return;
+
+        e.stopPropagation();
+        folderElement.classList.add('dragging');
+        dragSourceFolderElement = folderElement.parentElement?.closest('.folder') ?? null;
+
+        if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', folderElement.dataset.folderId ?? '');
+        }
+    });
+
+    folderElement.addEventListener('dragend', (e) => {
+        if (e.target !== folderElement) return;
+        folderElement.classList.remove('dragging');
+    });
+}
+
+/**
+ * Persist a folder move. The DOM has already been repositioned by the drop handler, so all
+ * that is left is to re-parent the bookmark folder.
+ */
+async function handleFolderDrop(folderElement, targetFolderElement, container) {
+    const folderId = folderElement.dataset.folderId;
+    if (!folderId) {
+        Logger.warn('Folder has no bookmark id yet, not moving it');
+        return;
+    }
+
+    let parentId = null;
+    if (targetFolderElement && targetFolderElement !== folderElement) {
+        parentId = targetFolderElement.dataset.folderId ?? null;
+    }
+
+    if (!parentId) {
+        // Dropped at the space root rather than inside another folder.
+        const spaceElement = container.closest('[data-space-id]');
+        const spaceName = spaceElement?.querySelector('.space-name')?.value;
+        if (!spaceName) {
+            Logger.warn('Could not resolve the space for a folder drop');
+            return;
+        }
+        const spaceFolder = await LocalStorage.getOrCreateSpaceFolder(spaceName);
+        parentId = spaceFolder.id;
+    }
+
+    try {
+        await chrome.bookmarks.move(folderId, { parentId });
+        Logger.log('Moved folder', folderId, 'into', parentId);
+    } catch (error) {
+        Logger.error('Error moving folder:', error);
+    }
+}
+
 async function setupDragAndDrop(pinnedContainer, tempContainer) {
     Logger.log('Setting up drag and drop handlers...');
     [pinnedContainer, tempContainer].forEach(container => {
@@ -2133,6 +2216,12 @@ async function setupDragAndDrop(pinnedContainer, tempContainer) {
 
                 const targetContainer = targetFolder || container;
 
+                // A folder cannot be dropped into itself or into one of its own descendants.
+                if (draggingElement.classList.contains('folder') && draggingElement.contains(targetContainer)) {
+                    Logger.log('Refusing to drop a folder inside itself');
+                    return;
+                }
+
                 // Calculate drop position using same logic as indicators
                 const afterElement = getDragAfterElementTabs(targetContainer, e.clientY);
                 if (afterElement && targetContainer.contains(afterElement)) {
@@ -2160,6 +2249,16 @@ async function setupDragAndDrop(pinnedContainer, tempContainer) {
                 } else {
                     // Fallback: append to end if no specific target
                     targetContainer.appendChild(draggingElement);
+                }
+
+                // Folders re-parent themselves; handleBookmarkOperations is tab-only.
+                if (draggingElement.classList.contains('folder')) {
+                    await handleFolderDrop(draggingElement, targetFolderElement, container);
+                    if (dragSourceFolderElement) syncCollapsedFolderTabs(dragSourceFolderElement);
+                    if (targetFolderElement) syncCollapsedFolderTabs(targetFolderElement);
+                    updateFolderPlaceholder(draggingElement);
+                    if (targetFolderElement) updateFolderPlaceholder(targetFolderElement);
+                    return;
                 }
 
                 // Handle bookmark operations after DOM positioning is complete
@@ -2250,8 +2349,28 @@ function setupPlaceholderDragAndDrop(placeholderContainer, pinnedContainer) {
     });
 }
 
-async function createNewFolder(spaceElement) {
-    const pinnedContainer = spaceElement.querySelector('[data-tab-type="pinned"]');
+/**
+ * Create a folder inside a space.
+ *
+ * @param {HTMLElement} spaceElement  the space this folder belongs to
+ * @param {object} [options]
+ * @param {string} [options.parentFolderId]  bookmark id to nest under; defaults to the
+ *        space's own folder, which is all this function could ever do before.
+ * @param {HTMLElement} [options.container]  DOM container to render into; defaults to the
+ *        space's pinned container.
+ */
+async function createNewFolder(spaceElement, options = {}) {
+    const { parentFolderId = null, container = null } = options;
+    const pinnedContainer = container ?? spaceElement.querySelector('[data-tab-type="pinned"]');
+
+    // Resolved lazily: the space can be renamed between opening the input and committing.
+    const resolveParentId = async () => {
+        if (parentFolderId) return parentFolderId;
+        const spaceName = spaceElement.querySelector('.space-name').value;
+        const spaceFolder = await LocalStorage.getOrCreateSpaceFolder(spaceName);
+        return spaceFolder.id;
+    };
+
     const folderTemplate = document.getElementById('folderTemplate');
     const newFolder = folderTemplate.content.cloneNode(true);
     const folderElement = newFolder.querySelector('.folder');
@@ -2283,18 +2402,20 @@ async function createNewFolder(spaceElement) {
 
     // Set up folder name input
     folderNameInput.addEventListener('change', async () => {
-        const spaceName = spaceElement.querySelector('.space-name').value;
-        const spaceFolder = await LocalStorage.getOrCreateSpaceFolder(spaceName);
-        const existingFolders = await chrome.bookmarks.getChildren(spaceFolder.id);
-        const folder = existingFolders.find(f => f.title === folderNameInput.value);
+        const parentId = await resolveParentId();
+        const existingFolders = await chrome.bookmarks.getChildren(parentId);
+        const folder = existingFolders.find(f => !f.url && f.title === folderNameInput.value);
         if (!folder) {
-            await chrome.bookmarks.create({
-                parentId: spaceFolder.id,
+            const created = await chrome.bookmarks.create({
+                parentId,
                 title: folderNameInput.value
             });
+            folderElement.dataset.folderId = created.id;
             folderNameInput.style.display = 'none';
             folderTitle.innerHTML = folderNameInput.value;
             folderTitle.style.display = 'inline';
+        } else {
+            folderElement.dataset.folderId = folder.id;
         }
     });
 
@@ -2315,15 +2436,17 @@ async function createNewFolder(spaceElement) {
         if (save) {
             const newName = folderNameInput.value.trim();
             if (newName) {
-                const spaceName = spaceElement.querySelector('.space-name').value;
-                const spaceFolder = await LocalStorage.getOrCreateSpaceFolder(spaceName);
-                const existingFolders = await chrome.bookmarks.getChildren(spaceFolder.id);
-                const folder = existingFolders.find(f => f.title === newName);
+                const parentId = await resolveParentId();
+                const existingFolders = await chrome.bookmarks.getChildren(parentId);
+                const folder = existingFolders.find(f => !f.url && f.title === newName);
                 if (!folder) {
-                    await chrome.bookmarks.create({
-                        parentId: spaceFolder.id,
+                    const created = await chrome.bookmarks.create({
+                        parentId,
                         title: newName
                     });
+                    folderElement.dataset.folderId = created.id;
+                } else {
+                    folderElement.dataset.folderId = folder.id;
                 }
             }
         }
@@ -2345,8 +2468,11 @@ async function createNewFolder(spaceElement) {
         }
     });
 
-    // Add the new folder to the pinned container
+    // Add the new folder to its container (space root, or a parent folder's content)
     pinnedContainer.appendChild(folderElement);
+
+    // Folders are draggable so they can be nested by hand
+    setupFolderDragHandlers(folderElement);
 
     // Set up context menu for the new folder
     setupFolderContextMenu(folderElement, { name: spaceElement.querySelector('.space-name').value });
@@ -2397,9 +2523,15 @@ async function loadTabs(space, pinnedContainer, tempContainer) {
                         const folderContent = folderElement.querySelector('.folder-content');
                         const folderToggle = folderElement.querySelector('.folder-toggle');
                         const placeHolderElement = folderElement.querySelector('.tab-placeholder');
+
+                        // The bookmark id is the only stable handle on a folder; title
+                        // lookups break the moment two levels share a name.
+                        folderElement.dataset.folderId = item.id;
+
                         // Set up folder toggle functionality
                         // Add context menu for folder
                         setupFolderContextMenu(folderElement, space, item);
+                        setupFolderDragHandlers(folderElement);
 
                         folderHeader.addEventListener('click', () => {
                             // Clear the tracked shown tabs when user manually toggles the folder (Arc behavior).
@@ -3782,15 +3914,165 @@ function scrollToTab(tabId, timeout = 0) {
  * Handles when a tab group is removed (space is closed)
  * @param {number} groupId - The ID of the removed tab group
  */
+/**
+ * Read the spaces saved by the previous session.
+ * initSidebar rebuilds `spaces` from live tab groups, so this is only used to carry
+ * forward values that cannot be derived from Chrome - currently the uuid.
+ */
+async function getStoredSpaces() {
+    try {
+        const stored = await chrome.storage.local.get('spaces');
+        return Array.isArray(stored.spaces) ? stored.spaces : [];
+    } catch (error) {
+        Logger.warn('Could not read stored spaces:', error);
+        return [];
+    }
+}
+
+/**
+ * Keep a space's uuid stable across restarts.
+ * Group ids are ephemeral, so match on the id first and fall back to the group title -
+ * the only identity that actually survives a browser restart.
+ */
+function reuseSpaceUuid(storedSpaces, group) {
+    const byId = storedSpaces.find(s => s.id === group.id);
+    if (byId?.uuid) return byId.uuid;
+
+    const byName = storedSpaces.find(s => s.name === group.title);
+    if (byName?.uuid) return byName.uuid;
+
+    return Utils.generateUUID();
+}
+
+/**
+ * Drop every trace of a space whose Chrome tab group no longer exists.
+ *
+ * This used to be missing entirely: the array entry, the DOM node and the storage record
+ * all survived the group. That is why a deleted space's name stayed permanently taken and
+ * createNewSpace answered "A space with this name already exists" (#44).
+ */
+function removeSpaceFromState(groupId) {
+    const index = spaces.findIndex(s => s.id === groupId);
+    if (index === -1) return null;
+
+    const [removed] = spaces.splice(index, 1);
+    document.querySelector(`[data-space-id="${groupId}"]`)?.remove();
+
+    if (previousSpaceId === groupId) {
+        previousSpaceId = spaces[0]?.id ?? null;
+    }
+
+    saveSpaces();
+    Logger.log('Removed space for dead tab group:', groupId, removed?.name);
+    return removed;
+}
+
+/**
+ * A tab group appeared that this panel did not create - Chrome's own UI, or another
+ * extension. Without this listener the sidebar stayed blind to it until the next reload.
+ */
+async function handleTabGroupCreated(group) {
+    if (isCreatingSpace || isInitialisingSidebar) return;
+    if (currentWindow && group.windowId !== currentWindow.id) return;
+    if (spaces.some(s => s.id === group.id)) return;
+
+    try {
+        const groupTabs = await chrome.tabs.query({ groupId: group.id });
+        const space = {
+            id: group.id,
+            uuid: Utils.generateUUID(),
+            name: group.title || defaultSpaceName,
+            color: group.color,
+            spaceBookmarks: [],
+            temporaryTabs: groupTabs.map(tab => tab.id)
+        };
+
+        await LocalStorage.getOrCreateSpaceFolder(space.name);
+
+        spaces.push(space);
+        createSpaceElement(space);
+        await updateSpaceSwitcher();
+        saveSpaces();
+        Logger.log('Adopted externally created tab group as a space:', space.name);
+    } catch (error) {
+        Logger.error('Error adopting new tab group:', error);
+    }
+}
+
+/**
+ * A tab group was renamed, recoloured, or collapsed.
+ *
+ * Renames matter most: the bookmark folder is looked up BY TITLE, so a rename made in
+ * Chrome's UI orphaned the space from its folder and the next init created a second one.
+ * Collapse-only updates are ignored - setActiveSpace triggers those constantly.
+ */
+async function handleTabGroupUpdated(group) {
+    if (isInitialisingSidebar) return;
+    if (currentWindow && group.windowId !== currentWindow.id) return;
+
+    const space = spaces.find(s => s.id === group.id);
+    if (!space) {
+        await handleTabGroupCreated(group);
+        return;
+    }
+
+    const newName = group.title || space.name;
+    const renamed = newName !== space.name;
+    const recoloured = group.color && group.color !== space.color;
+
+    if (!renamed && !recoloured) return;
+
+    try {
+        if (renamed) {
+            await LocalStorage.renameSpaceFolder(space.name, newName);
+            space.name = newName;
+
+            const nameInput = document
+                .querySelector(`[data-space-id="${group.id}"]`)
+                ?.querySelector('.space-name');
+            if (nameInput && nameInput.value !== newName) {
+                nameInput.value = newName;
+            }
+        }
+
+        if (recoloured) {
+            space.color = group.color;
+            const colorSelect = document
+                .querySelector(`[data-space-id="${group.id}"]`)
+                ?.querySelector('#spaceColorSelect, .space-color-select');
+            if (colorSelect && colorSelect.value !== group.color) {
+                colorSelect.value = group.color;
+            }
+            reapplySpaceColors();
+        }
+
+        await updateSpaceSwitcher();
+        saveSpaces();
+        Logger.log('Synced external tab group change:', group.id, { renamed, recoloured });
+    } catch (error) {
+        Logger.error('Error syncing tab group update:', error);
+    }
+}
+
 async function handleTabGroupRemoved(groupId) {
     Logger.log('Tab group removed:', groupId);
 
+    const wasActive = groupId === activeSpaceId;
+
+    // Remember where to land BEFORE the array is mutated.
+    const previousSpace = spaces.find(s => s.id === previousSpaceId && s.id !== groupId);
+
+    // Actually delete the space. This is the fix for both the stale-storage half of #43
+    // and for #44.
+    removeSpaceFromState(groupId);
+    await updateSpaceSwitcher();
+
     // Check if this was the currently active space
-    if (groupId === activeSpaceId) {
+    if (wasActive) {
         Logger.log('Active space was closed, switching to last tab from previously used space');
 
-        // Find the previously used space (excluding the closed one)
-        const previousSpace = spaces.find(s => s.id === previousSpaceId && s.id !== groupId);
+        activeSpaceId = null;
+
         if (previousSpace && previousSpace.lastTab) {
             try {
                 // Try to activate the last tab from the previously used space
@@ -3813,6 +4095,13 @@ async function handleTabGroupRemoved(groupId) {
                 await chrome.tabs.update(remainingTabs[0].id, { active: true });
                 Logger.log('Switched to fallback tab:', remainingTabs[0].id);
             }
+        }
+
+        // The panel had no active space between the delete and here - point it at a
+        // survivor so the UI is not left blank.
+        const fallbackSpace = previousSpace ?? spaces[0];
+        if (fallbackSpace) {
+            await setActiveSpace(fallbackSpace.id, false);
         }
     }
 }
@@ -3949,11 +4238,47 @@ function setupFolderContextMenu(folderElement, space, item = null) {
         contextMenu.style.left = `${e.clientX}px`;
         contextMenu.style.top = `${e.clientY}px`;
 
+        // Nesting entry point. Before this the ONLY way to make a folder was the single
+        // .new-folder-btn in the space options dropdown, which always built at the root.
+        const newSubfolderOption = document.createElement('div');
+        newSubfolderOption.classList.add('context-menu-item');
+        newSubfolderOption.textContent = 'New Subfolder';
+        newSubfolderOption.addEventListener('click', async () => {
+            contextMenu.remove();
+
+            const spaceElement = folderElement.closest('[data-space-id]');
+            const folderContent = folderElement.querySelector('.folder-content');
+            const parentFolderId = folderElement.dataset.folderId ?? item?.id ?? null;
+
+            if (!spaceElement || !folderContent || !parentFolderId) {
+                Logger.warn('Cannot create a subfolder here yet - parent folder not saved');
+                return;
+            }
+
+            openFolder(folderElement);
+            await createNewFolder(spaceElement, { parentFolderId, container: folderContent });
+            updateFolderPlaceholder(folderElement);
+        });
+
         const deleteOption = document.createElement('div');
         deleteOption.classList.add('context-menu-item');
         deleteOption.textContent = 'Delete Folder';
         deleteOption.addEventListener('click', async () => {
             if (confirm('Are you sure you want to delete this folder and all its contents?')) {
+                // Prefer the bookmark id: the title lookup below only ever searched the
+                // space root, so it could never delete a nested folder.
+                const folderId = folderElement.dataset.folderId ?? item?.id ?? null;
+                if (folderId) {
+                    try {
+                        await chrome.bookmarks.removeTree(folderId);
+                        folderElement.remove();
+                    } catch (error) {
+                        Logger.error('Error deleting folder:', error);
+                    }
+                    contextMenu.remove();
+                    return;
+                }
+
                 const arcifyFolder = await LocalStorage.getOrCreateArcifyFolder();
                 const spaceFolders = await chrome.bookmarks.getChildren(arcifyFolder.id);
                 const spaceFolder = spaceFolders.find(f => f.title === space.name);
@@ -3971,6 +4296,7 @@ function setupFolderContextMenu(folderElement, space, item = null) {
             contextMenu.remove();
         });
 
+        contextMenu.appendChild(newSubfolderOption);
         contextMenu.appendChild(deleteOption);
         document.body.appendChild(contextMenu);
 

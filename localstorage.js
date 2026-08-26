@@ -36,6 +36,35 @@ const LocalStorage = {
         return spaceFolder;
     },
 
+    /**
+     * Rename a space's bookmark folder so it keeps matching the tab group title.
+     *
+     * The folder is looked up BY TITLE everywhere, so a group renamed in Chrome's own UI
+     * orphans its folder and the next init silently creates a duplicate. Returns the folder
+     * when it was renamed, null when there was nothing to do.
+     */
+    renameSpaceFolder: async function (oldName, newName) {
+        if (!oldName || !newName || oldName === newName) return null;
+
+        const arcifyFolder = await this.getOrCreateArcifyFolder();
+        const children = await chrome.bookmarks.getChildren(arcifyFolder.id);
+
+        const target = children.find((f) => !f.url && f.title === newName);
+        if (target) {
+            // A folder already carries the new name (the rename came from our own UI, or the
+            // user made one by hand). mergeDuplicateSpaceFolders cleans up any leftover.
+            Logger.log(`Folder "${newName}" already exists, leaving "${oldName}" for the merge pass`);
+            return target;
+        }
+
+        const source = children.find((f) => !f.url && f.title === oldName);
+        if (!source) return null;
+
+        await chrome.bookmarks.update(source.id, { title: newName });
+        Logger.log(`Renamed space folder "${oldName}" -> "${newName}"`);
+        return { ...source, title: newName };
+    },
+
     // --- Recursive Helper Function to Merge Contents ---
     _mergeFolderContentsRecursive: async function (sourceFolderId, targetFolderId) {
         Logger.log(`Recursively merging contents from ${sourceFolderId} into ${targetFolderId}`);
