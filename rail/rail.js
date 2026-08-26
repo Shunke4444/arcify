@@ -30,6 +30,10 @@
 
     const HOST_ID = 'arcify-rail-host';
     const HIDE_DELAY_MS = 260;
+    // How close to the left edge the pointer must get to summon the panel.
+    const EDGE_TRIGGER_PX = 6;
+    // Once open, the pointer has to leave this band before it hides again.
+    const PANEL_REGION_PX = 232;
     const CHROME_GROUP_COLORS = {
         grey: '#9aa0a6',
         blue: '#8ab4f8',
@@ -69,25 +73,16 @@
         <style>
             :host { all: initial; }
 
-            .trigger {
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: 10px;
-                height: 100vh;
-                z-index: 1;
-            }
-
             .panel {
                 position: fixed;
                 top: 12px;
                 left: 12px;
-                width: 236px;
+                width: 200px;
                 max-height: calc(100vh - 24px);
                 display: flex;
                 flex-direction: column;
-                gap: 8px;
-                padding: 10px;
+                gap: 6px;
+                padding: 8px;
                 box-sizing: border-box;
 
                 background: rgba(32, 33, 36, 0.86);
@@ -99,8 +94,8 @@
 
                 color: #e8eaed;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                font-size: 13px;
-                line-height: 1.3;
+                font-size: 12px;
+                line-height: 1.25;
 
                 /* Hidden by default: translated out AND non-interactive, so a hidden rail
                    can never swallow a click meant for the page. */
@@ -168,8 +163,8 @@
 
             .space {
                 flex: none;
-                height: 24px;
-                max-width: 110px;
+                height: 22px;
+                max-width: 96px;
                 display: flex;
                 align-items: center;
                 gap: 6px;
@@ -210,8 +205,8 @@
 
             .pin-tab {
                 flex: none;
-                width: 30px;
-                height: 30px;
+                width: 26px;
+                height: 26px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
@@ -249,11 +244,11 @@
             .tab {
                 display: flex;
                 align-items: center;
-                gap: 8px;
-                padding: 5px 6px;
-                border-radius: 8px;
+                gap: 7px;
+                padding: 3px 5px;
+                border-radius: 7px;
                 cursor: pointer;
-                min-height: 26px;
+                min-height: 22px;
             }
 
             .tab:hover { background: rgba(255, 255, 255, 0.10); }
@@ -261,16 +256,16 @@
 
             .favicon {
                 flex: none;
-                width: 16px;
-                height: 16px;
+                width: 14px;
+                height: 14px;
                 border-radius: 3px;
                 object-fit: contain;
             }
 
             .fallback-icon {
                 flex: none;
-                width: 16px;
-                height: 16px;
+                width: 14px;
+                height: 14px;
                 border-radius: 3px;
                 background: rgba(255, 255, 255, 0.2);
             }
@@ -309,7 +304,7 @@
                 align-items: center;
                 justify-content: center;
                 gap: 6px;
-                height: 28px;
+                height: 24px;
                 border: none;
                 border-radius: 8px;
                 background: rgba(255, 255, 255, 0.08);
@@ -344,7 +339,6 @@
             }
         </style>
 
-        <div class="trigger"></div>
         <div class="panel">
             <div class="header">
                 <span class="title">Arcify</span>
@@ -358,7 +352,6 @@
         </div>
     `;
 
-    const trigger = shadow.querySelector('.trigger');
     const panel = shadow.querySelector('.panel');
     const spacesEl = shadow.querySelector('.spaces');
     const pinnedEl = shadow.querySelector('.pinned');
@@ -512,10 +505,66 @@
         }, HIDE_DELAY_MS);
     }
 
-    trigger.addEventListener('mouseenter', show);
+    // Edge detection by pointer position rather than a hit-testing element. A fixed strip
+    // over the left edge would swallow every click landing in that band - links, sidebars,
+    // scrollbars on RTL pages. This intercepts nothing.
+    window.addEventListener('mousemove', (event) => {
+        if (event.clientX <= EDGE_TRIGGER_PX) {
+            if (!open) show();
+            return;
+        }
+        // Moving away from the edge while the panel is closed: nothing to do. While open,
+        // the panel's own mouseleave handles it.
+        if (open && !pinned && event.clientX > PANEL_REGION_PX) {
+            scheduleHide();
+        }
+    }, { passive: true });
+
     panel.addEventListener('mouseenter', () => clearTimeout(hideTimer));
     panel.addEventListener('mouseleave', scheduleHide);
-    trigger.addEventListener('mouseleave', scheduleHide);
+
+    // Never sit on top of fullscreen video.
+    document.addEventListener('fullscreenchange', () => {
+        const isFullscreen = Boolean(document.fullscreenElement);
+        host.style.display = isFullscreen ? 'none' : '';
+        if (isFullscreen) {
+            clearTimeout(hideTimer);
+            open = false;
+            panel.classList.remove('open');
+        }
+    });
+
+    // Ctrl+S toggle.
+    //
+    // Bound here rather than in manifest commands for two reasons: the manifest is already
+    // at Chrome's hard limit of four suggested_key entries, and unlike Ctrl+T the browser's
+    // Ctrl+S (Save page) IS cancelable from a page, so preventDefault actually holds.
+    function toggleRail() {
+        if (open) {
+            pinned = false;
+            pinBtn.classList.remove('active');
+            clearTimeout(hideTimer);
+            open = false;
+            panel.classList.remove('open');
+            return;
+        }
+
+        // Opened by keyboard, so there is no pointer to keep it alive - pin it, otherwise
+        // it would vanish the moment the mouse moved.
+        pinned = true;
+        pinBtn.classList.add('active');
+        pinBtn.title = 'Unpin';
+        show();
+    }
+
+    window.addEventListener('keydown', (event) => {
+        if (!event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return;
+        if (event.key !== 's' && event.key !== 'S') return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        toggleRail();
+    }, true);
 
     pinBtn.addEventListener('click', () => {
         pinned = !pinned;
