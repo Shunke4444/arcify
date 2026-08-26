@@ -22,7 +22,7 @@
     'use strict';
 
     // Bump on every behavioural change to this file.
-    const RAIL_VERSION = 7;
+    const RAIL_VERSION = 8;
 
     // Guard against double injection, but NOT against upgrades.
     //
@@ -52,11 +52,12 @@
     if (window.top !== window) return;
 
     const HOST_ID = 'arcify-rail-host';
-    const HIDE_DELAY_MS = 260;
+    const HIDE_DELAY_MS = 70;
     // How close to the left edge the pointer must get to summon the panel.
     const EDGE_TRIGGER_PX = 6;
-    // How far past the panel's right edge the pointer must go before it hides.
-    const HIDE_MARGIN_PX = 36;
+    // How far past the panel's right edge the pointer must go before it hides. Kept
+    // small so leaving feels immediate rather than sticky.
+    const HIDE_MARGIN_PX = 10;
     const MIN_WIDTH_PX = 160;
     const MAX_WIDTH_PX = 460;
     const DEFAULT_WIDTH_PX = 215;
@@ -114,7 +115,7 @@
             .panel {
                 position: fixed;
                 top: 8px;
-                left: 8px;
+                left: 10px;
                 width: var(--rail-width, 215px);
                 /* Near full height, like Arc's sidebar - the width is what shrinks, not
                    the height. */
@@ -122,7 +123,7 @@
                 display: flex;
                 flex-direction: column;
                 gap: 10px;
-                padding: 12px 8px 10px;
+                padding: 12px 10px 10px;
                 box-sizing: border-box;
 
                 background: var(--space-bg, #cccccc);
@@ -139,7 +140,8 @@
                 transform: translateX(calc(-100% - 16px));
                 opacity: 0;
                 pointer-events: none;
-                transition: transform 0.2s ease, opacity 0.2s ease, background-color 0.3s ease;
+                /* Leaving: quick. */
+                transition: transform 0.11s ease-in, opacity 0.09s ease-in, background-color 0.3s ease;
             }
 
             /* A handover opens a DIFFERENT document's panel. Sliding in each time made
@@ -150,6 +152,8 @@
                 transform: translateX(0);
                 opacity: 1;
                 pointer-events: auto;
+                /* Arriving: a touch softer than leaving. */
+                transition: transform 0.17s ease-out, opacity 0.14s ease-out, background-color 0.3s ease;
             }
 
             .header {
