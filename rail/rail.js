@@ -164,7 +164,7 @@
             .space {
                 flex: none;
                 height: 22px;
-                max-width: 96px;
+                max-width: 104px;
                 display: flex;
                 align-items: center;
                 gap: 6px;
@@ -419,6 +419,7 @@
 
         // --- spaces ---
         spacesEl.replaceChildren();
+        let activeChip = null;
         for (const space of state.spaces) {
             const btn = document.createElement('button');
             btn.className = 'space' + (space.active ? ' active' : '');
@@ -437,7 +438,16 @@
                 await send('railSwitchSpace', { spaceId: space.id });
                 queueRefresh();
             });
+            if (space.active) activeChip = btn;
             spacesEl.appendChild(btn);
+        }
+
+        // The row scrolls horizontally, so with more spaces than fit at 200px the active
+        // one was simply off the end - visible as a clipped chip showing only its dot.
+        if (activeChip) {
+            requestAnimationFrame(() => {
+                activeChip.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            });
         }
 
         // --- browser-pinned tabs ---
