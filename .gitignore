@@ -42,3 +42,5 @@ CLAUDE.md
 
 # Playwright
 test-results/
+# E2E artifacts
+tests/e2e/screenshots/

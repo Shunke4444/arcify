@@ -16,6 +16,7 @@
     "test:e2e": "npm run build && cross-env NODE_OPTIONS=--experimental-vm-modules jest --config jest.config.js",
     "test:e2e:watch": "cross-env NODE_OPTIONS=--experimental-vm-modules jest --config jest.config.js --watch",
     "test:e2e:debug": "cross-env DEBUG=true npm run test:e2e",
+    "test:rail": "node scripts/rail-e2e.cjs",
     "test:spaces": "npm run build && cross-env NODE_OPTIONS=--experimental-vm-modules jest tests/e2e/spaces.test.js",
     "test:tabs": "npm run build && cross-env NODE_OPTIONS=--experimental-vm-modules jest tests/e2e/tabs.test.js",
     "test:bookmarks": "npm run build && cross-env NODE_OPTIONS=--experimental-vm-modules jest tests/e2e/bookmarks.test.js",
