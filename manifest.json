@@ -19,6 +19,9 @@
     "clipboardWrite",
     "offscreen"
   ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "side_panel": {
     "default_path": "sidebar.html"
   },
@@ -48,7 +51,7 @@
       "js": [
         "rail/rail.js"
       ],
-      "run_at": "document_idle",
+      "run_at": "document_start",
       "all_frames": false
     }
   ],

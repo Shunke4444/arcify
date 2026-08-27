@@ -26,6 +26,12 @@
 <body>
     <div id="spotlight-container"></div>
     <script type="module" src="newtab.js"></script>
+    <!-- The rail as a plain script, not a content script.
+         Content scripts never run on chrome-extension:// pages, and this page IS one - it
+         is the newtab override - so Ctrl+T landed on the one page in the browser with no
+         rail at all. Included directly it runs in the extension's own context, where the
+         chrome.* APIs it needs are available anyway. -->
+    <script src="../rail/rail.js"></script>
 </body>
 
 </html>

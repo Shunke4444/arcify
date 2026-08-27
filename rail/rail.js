@@ -22,7 +22,7 @@
     'use strict';
 
     // Bump on every behavioural change to this file.
-    const RAIL_VERSION = 13;
+    const RAIL_VERSION = 18;
 
     // Guard against double injection, but NOT against upgrades.
     //
@@ -101,6 +101,12 @@
     let width = DEFAULT_WIDTH_PX;
     let resizing = false;
     let pointerInside = false;
+    // Browser zoom for this tab. Everything the rail measures is in the page's CSS pixels,
+    // which zoom redefines - so it divides by this to keep a constant PHYSICAL size.
+    let zoom = 1;
+    // Last pointer position actually seen in this document, used to spot replays.
+    let lastMoveX = null;
+    let lastMoveY = null;
     let refreshPending = false;
     // Wall-clock deadline before which nothing may hide the panel. A handover arrives with
     // the pointer already over the panel but no mouseenter fired in this document, so
@@ -471,9 +477,16 @@
 
     // ---------------------------------------------------------------- width
 
+    // `width` is stored unzoomed, so every tab agrees on it regardless of its own zoom.
     function applyWidth(next) {
         width = Math.round(Math.min(MAX_WIDTH_PX, Math.max(MIN_WIDTH_PX, next)));
-        panel.style.setProperty('--rail-width', `${width}px`);
+        panel.style.setProperty('--rail-width', `${width / zoom}px`);
+    }
+
+    function setZoom(next) {
+        if (typeof next !== 'number' || !(next > 0) || next === zoom) return;
+        zoom = next;
+        applyWidth(width);
     }
 
     // Width is per browser profile, not per tab - every rail in every tab should agree.
@@ -512,7 +525,8 @@
     resizer.addEventListener('pointermove', (event) => {
         if (!resizing) return;
         // The panel is flush to the edge, so its width is simply the pointer position.
-        applyWidth(event.clientX);
+        // clientX is in the page's zoomed pixels; store the unzoomed width.
+        applyWidth(event.clientX * zoom);
     });
 
     function endResize(event) {
@@ -747,7 +761,10 @@
                 await send('railSetSpaceColor', { spaceId: activeSpace.id, color: name });
                 swatchesEl.classList.remove('open');
                 paletteBtn.classList.remove('active');
-                queueRefresh();
+                // forceRefresh, not queueRefresh: your pointer is necessarily inside the
+                // panel when you click a swatch, and queueRefresh defers while it is - so
+                // the rail kept its old colour while the side panel repainted at once.
+                forceRefresh();
             });
             swatchesEl.appendChild(swatch);
         }
@@ -810,7 +827,25 @@
     // over the left edge would swallow every click landing in that band - links, sidebars,
     // scrollbars on RTL pages. This intercepts nothing.
     window.addEventListener('mousemove', (event) => {
-        if (event.clientX <= EDGE_TRIGGER_PX) {
+        // A mousemove that does not move is not information.
+        //
+        // Activating a tab makes Chrome replay the pointer's last known position into the
+        // newly visible document as a synthetic mousemove. Those coordinates are stale -
+        // they are from before the tab was switched - and acting on them closed a panel
+        // that had just been handed over, because the old position was outside it. A
+        // genuine move always reports a different coordinate; a replay never does.
+        if (event.clientX === lastMoveX && event.clientY === lastMoveY) return;
+        lastMoveX = event.clientX;
+        lastMoveY = event.clientY;
+
+        if (event.clientX <= EDGE_TRIGGER_PX / zoom) {
+            // The edge is inside the panel whenever it is open, so nothing here may hide
+            // it. This used to only call show(), which clears the hide timer - but show()
+            // is skipped when the panel is ALREADY open, so a hide armed by a flick to the
+            // right survived the pointer coming straight back and closed the panel with
+            // the pointer sitting on the very edge. That was the flicker.
+            clearTimeout(hideTimer);
+            pointerInside = true;
             if (!open) show();
             return;
         }
@@ -827,13 +862,23 @@
         }
         pointerInside = inside;
 
-        if (Date.now() < holdOpenUntil) return;
-
         if (inside) {
             clearTimeout(hideTimer);
-        } else {
-            scheduleHide();
+            return;
         }
+
+        // Left during the handover grace. Not now - but not never either: if the pointer
+        // settles out there, the panel still has to go once the grace is over. Dropping
+        // the event left it open until the mouse happened to move again.
+        if (Date.now() < holdOpenUntil) {
+            clearTimeout(hideTimer);
+            hideTimer = setTimeout(() => {
+                if (!pointerInside) scheduleHide();
+            }, holdOpenUntil - Date.now() + 1);
+            return;
+        }
+
+        scheduleHide();
     }, { passive: true, signal: abort.signal });
 
     // Delegated on the PANEL, which is never replaced.
@@ -888,7 +933,7 @@
     // well inside it. Pointer position against the panel's own edge cannot lie.
     function pointerIsOverPanel(clientX) {
         // The panel is flush to the left and full height, so X alone decides it.
-        return clientX <= width + HIDE_MARGIN_PX;
+        return clientX <= (width + HIDE_MARGIN_PX) / zoom;
     }
 
     // Leaving this tab: drop the panel silently, so returning to it is a clean re-open
@@ -949,7 +994,8 @@
 
     newTabBtn.addEventListener('click', async () => {
         await send('railNewTab');
-        queueRefresh();
+        // Same reasoning as the swatches: the click came from inside the panel.
+        forceRefresh();
     });
 
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -966,23 +1012,55 @@
         //
         // Not pinned: the point is that it survives the action, not that it stays forever.
         // The next mousemove away from the panel hides it, exactly like a hover-open.
+        if (message.action === 'railZoomChanged') {
+            setZoom(message.zoom);
+            return;
+        }
+
         if (message.action === 'railOpenImmediately') {
-            // Appear already in place rather than animating in from off-screen.
-            panel.classList.add('instant');
-            holdOpenUntil = Date.now() + HANDOVER_GRACE_MS;
-            clearTimeout(hideTimer);
-            show();
-            requestAnimationFrame(() => {
-                requestAnimationFrame(() => panel.classList.remove('instant'));
-            });
-            // The pointer is already sitting over the panel area, but no mousemove has
-            // fired in this document yet, so nothing would keep it alive. Suppress the
-            // hide timer until the pointer actually moves somewhere.
-            clearTimeout(hideTimer);
+            openInPlace();
             sendResponse({ success: true });
             return true;
         }
     });
+
+    // Open without the slide-in, and hold it open long enough for the pointer to be
+    // counted. Used by a handover from another tab and by the arrival check below.
+    function openInPlace() {
+        panel.classList.add('instant');
+        holdOpenUntil = Date.now() + HANDOVER_GRACE_MS;
+        clearTimeout(hideTimer);
+        show();
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => panel.classList.remove('instant'));
+        });
+        // The pointer may already be sitting over the panel, but no mousemove has fired in
+        // this document yet, so nothing would keep it alive. Leave no hide timer armed.
+        clearTimeout(hideTimer);
+    }
+
+    // Ask, rather than wait to be told.
+    //
+    // handOverRail pushes railOpenImmediately at the destination tab, but clicking a row
+    // for a tab that is loading destroys the old document and the replacement does not run
+    // this script until later - so the push arrives when no listener exists, burns its
+    // retries, and the freshly attached rail sits closed while the page finishes loading.
+    // The window already knows whether it wants a rail; asking on arrival cannot race.
+    async function openIfWindowWantsRail() {
+        const response = await send('railShouldBeOpen');
+        if (response && response.open && !open) openInPlace();
+    }
+
+    // At document_start the page has not built its DOM yet, and some pages replace
+    // documentElement outright (document.write, framework bootstraps), which would take the
+    // host with it. Put it back if that happens.
+    function ensureAttached() {
+        if (orphaned) return;
+        if (!host.isConnected) document.documentElement.appendChild(host);
+    }
+
+    document.addEventListener('DOMContentLoaded', ensureAttached, listenerOpts);
+    window.addEventListener('load', ensureAttached, listenerOpts);
 
     // Let a future build retire this one properly rather than just orphaning its DOM.
     window.__arcifyRailTeardown = () => {
@@ -1000,10 +1078,28 @@
         }
     };
 
+    // Diagnostics. Closure state is invisible from the page and from DevTools' page
+    // context; select the extension's context in the console and call this.
+    window.__arcifyRailDebug = () => ({
+        version: RAIL_VERSION,
+        open,
+        pinned,
+        resizing,
+        pointerInside,
+        refreshPending,
+        orphaned,
+        holdRemainingMs: Math.max(0, holdOpenUntil - Date.now()),
+        hideTimerSet: hideTimer !== null,
+        width,
+        visibility: document.visibilityState
+    });
+
     console.log(`[ArcifyRail] v${RAIL_VERSION} attached`);
 
     // documentElement, not body: body may not exist yet and may be replaced by the page.
     document.documentElement.appendChild(host);
 
     loadWidth();
+    openIfWindowWantsRail();
+    send('railGetZoom').then(response => setZoom(response && response.zoom));
 })();

@@ -257,6 +257,9 @@ async function getRailState(windowId) {
         .map(tab => ({
             id: tab.id,
             title: tab.title || tab.url || 'Untitled',
+            // The rail resolves icons from the URL through /_favicon/. Without url every
+            // pinned tab fell back to a grey square that looked like it was still loading.
+            url: tab.url || '',
             favIconUrl: tab.favIconUrl || '',
             active: Boolean(tab.active)
         }));
@@ -390,6 +393,13 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
         broadcastRailUpdate();
     }
 });
+// A content script is laid out in the page's own coordinate system, so browser zoom
+// scales it: a 215px rail is physically 322px at 150%, wider than the side panel it
+// exists to be narrower than. The rail divides by this to hold a constant real width.
+chrome.tabs.onZoomChange.addListener(({ tabId, newZoomFactor }) => {
+    chrome.tabs.sendMessage(tabId, { action: 'railZoomChanged', zoom: newZoomFactor }).catch(() => { });
+});
+
 chrome.tabGroups.onCreated.addListener(broadcastRailUpdate);
 chrome.tabGroups.onRemoved.addListener(broadcastRailUpdate);
 chrome.tabGroups.onUpdated.addListener(broadcastRailUpdate);
@@ -1123,6 +1133,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             await chrome.tabGroups.update(message.spaceId, { color: message.color });
             return {};
         }, sendResponse, 'setting space colour from rail');
+
+    } else if (message.action === 'railGetZoom') {
+        return handleAsyncMessage(async () => {
+            const tabId = sender.tab?.id;
+            return { zoom: tabId ? await chrome.tabs.getZoom(tabId) : 1 };
+        }, sendResponse, 'getting tab zoom', { zoom: 1 });
+
+    } else if (message.action === 'railShouldBeOpen') {
+        // Asked by every rail as it attaches. The push in handOverRail cannot reach a
+        // document that does not exist yet: clicking a row for a tab that is loading
+        // destroys the old document, and the replacement only runs its content script
+        // later - after the retry budget is long gone. So the rail asks on arrival
+        // instead of waiting to be told, and a slow page keeps its sidebar.
+        sendResponse({ success: true, open: Boolean(railOpenByWindow.get(sender.tab?.windowId)) });
+        return false;
 
     } else if (message.action === 'railOpened') {
         // Remember that this window wants a rail, so a plain tab switch (Ctrl+Tab, a click
