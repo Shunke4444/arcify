@@ -97,7 +97,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     }
 });
 
-chrome.commands.onCommand.addListener(async function (command) {
+chrome.commands.onCommand.addListener(async function (command, activeTab) {
     if (command === "quickPinToggle") {
         // Send a message to the sidebar
         chrome.runtime.sendMessage({ command: "quickPinToggle" });
@@ -124,7 +124,8 @@ chrome.commands.onCommand.addListener(async function (command) {
     } else if (command === "copyCurrentUrl") {
         await copyCurrentTabUrlWithFallback();
     } else if (command === "toggleRail") {
-        await toggleRailFromShortcut();
+        // Deliberately NOT awaited: see toggleRailFromShortcut.
+        toggleRailFromShortcut(activeTab);
     }
 });
 
@@ -132,30 +133,50 @@ chrome.commands.onCommand.addListener(async function (command) {
 // The rail is a content script, so on a page where none can run - brave://, the Web Store,
 // a PDF - there is nothing to toggle. Fall back to the side panel there, which is the only
 // surface that works on those pages anyway, so the key never does nothing.
-async function toggleRailFromShortcut() {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+// Pages that can host a rail: ordinary web pages via the content script, plus our own
+// newtab override, which includes rail.js directly because content scripts never run on
+// chrome-extension:// pages.
+function pageCanHostRail(url) {
+    if (!url) return false;
+    if (url.startsWith(chrome.runtime.getURL('spotlight/newtab.html'))) return true;
+    return supportsContentScripts(url);
+}
+
+// NOT async, and nothing is awaited before chrome.sidePanel.open().
+//
+// A command handler carries the user gesture that sidePanel.open() requires, but that
+// activation does not survive an await in an MV3 service worker. The previous version
+// looked the tab up with `await chrome.tabs.query(...)` first, which spent the gesture, so
+// on every page without a rail - a PDF, brave://, the Web Store - open() threw
+// "may only be called in response to a user gesture" and Alt+S did nothing at all.
+// chrome.commands.onCommand hands us the active tab, so no lookup is needed.
+function toggleRailFromShortcut(tab) {
     if (!tab) return;
 
-    if (supportsContentScripts(tab.url)) {
-        try {
-            await chrome.tabs.sendMessage(tab.id, { action: 'railToggle' });
-            return;
-        } catch (error) {
-            // Loaded before the extension was, or still committing its first navigation.
-            try {
-                await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['rail/rail.js'] });
-                await chrome.tabs.sendMessage(tab.id, { action: 'railToggle' });
-                return;
-            } catch (injectionError) {
-                Logger.log('[Rail] Shortcut could not reach a rail in tab', tab.id, injectionError);
-            }
-        }
+    if (pageCanHostRail(tab.url)) {
+        relayRailToggle(tab.id);
+        return;
     }
 
-    try {
-        await chrome.sidePanel.open({ windowId: tab.windowId });
-    } catch (error) {
+    // No rail can exist here; the side panel is the only surface that works on these
+    // pages, so the key still does something rather than nothing.
+    chrome.sidePanel.open({ windowId: tab.windowId }).catch(error => {
         Logger.log('[Rail] Shortcut fallback to side panel failed:', error);
+    });
+}
+
+async function relayRailToggle(tabId) {
+    try {
+        await chrome.tabs.sendMessage(tabId, { action: 'railToggle' });
+        return;
+    } catch (error) {
+        // Loaded before the extension was, or still committing its first navigation.
+    }
+    try {
+        await chrome.scripting.executeScript({ target: { tabId }, files: ['rail/rail.js'] });
+        await chrome.tabs.sendMessage(tabId, { action: 'railToggle' });
+    } catch (injectionError) {
+        Logger.log('[Rail] Shortcut could not reach a rail in tab', tabId, injectionError);
     }
 }
 

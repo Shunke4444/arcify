@@ -376,6 +376,19 @@ const railProbe = () => {
         ? [...h.shadowRoot.querySelectorAll('.tab[data-tab-id]')].length : 0;
     }), 3000, 'rail open on newtab');
     log(`  newtab rail open with ${opened} rows`);
+
+    // Alt+S must reach this page too. supportsContentScripts() rejects chrome-extension://
+    // URLs, so routing on that alone sent the shortcut to the side-panel fallback and the
+    // rail here - which exists - was never asked to toggle.
+    const ntTabId = await swEval(async (u) => (await chrome.tabs.query({ url: u }))[0]?.id,
+      await swEval(() => chrome.runtime.getURL('spotlight/newtab.html')));
+    assert(ntTabId, 'could not find the newtab tab');
+    await swEval(async (id) => { await chrome.tabs.sendMessage(id, { action: 'railToggle' }); }, ntTabId);
+    await until(async () => nt.evaluate(() => {
+      const h = document.querySelector('#arcify-rail-host');
+      return !h.shadowRoot.querySelector('.panel').classList.contains('open');
+    }), 2000, 'railToggle closed the newtab rail');
+    log('  railToggle reaches the newtab page');
     await nt.close();
     await pA.bringToFront(); await sleep(400);
   });
