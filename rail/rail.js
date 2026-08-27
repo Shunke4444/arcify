@@ -22,7 +22,7 @@
     'use strict';
 
     // Bump on every behavioural change to this file.
-    const RAIL_VERSION = 18;
+    const RAIL_VERSION = 19;
 
     // Guard against double injection, but NOT against upgrades.
     //
@@ -1012,6 +1012,14 @@
         //
         // Not pinned: the point is that it survives the action, not that it stays forever.
         // The next mousemove away from the panel hides it, exactly like a hover-open.
+        // Alt+S, routed through the background because a manifest command cannot be
+        // delivered to a content script directly.
+        if (message.action === 'railToggle') {
+            toggleRail();
+            sendResponse({ success: true });
+            return true;
+        }
+
         if (message.action === 'railZoomChanged') {
             setZoom(message.zoom);
             return;

@@ -449,6 +449,26 @@ const railProbe = () => {
     await sleep(400);
   });
 
+  await step('Alt+S routing: a railToggle message opens and closes the rail', async () => {
+    // The manifest binds Alt+S to a toggleRail command; the browser cannot deliver a
+    // command straight to a content script, so the background relays it as railToggle.
+    // A real Alt+S cannot be synthesised headlessly, but the relay contract can.
+    await pA.bringToFront();
+    await pA.mouse.move(800, 400); await sleep(120);
+    await until(async () => !(await probe(pA)).open, 2000, 'closed to start');
+    const toggle = () => swEval(async (id) => {
+      await chrome.tabs.sendMessage(id, { action: 'railToggle' });
+    }, ids.a);
+    await toggle();
+    const s = await until(async () => { const r = await probe(pA); return r.open ? r : null; }, 2000, 'open via railToggle');
+    assert(s.pinned, 'a keyboard-opened rail should pin itself, having no pointer to keep it alive');
+    await pA.mouse.move(900, 500); await sleep(300);
+    assert((await probe(pA)).open, 'pinned rail must survive the pointer moving away');
+    await toggle();
+    await until(async () => !(await probe(pA)).open, 2000, 'closed via railToggle');
+    log('  railToggle opened (pinned) and closed the rail');
+  });
+
   await step('extension reload: old copy retired, new copy attached, clicks work', async () => {
     const before = pageLogs.get('a').filter(l => /attached/.test(l)).length;
     const oldSw = await swTarget();

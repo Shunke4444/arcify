@@ -123,8 +123,41 @@ chrome.commands.onCommand.addListener(async function (command) {
         await injectSpotlightScript(SpotlightTabMode.NEW_TAB);
     } else if (command === "copyCurrentUrl") {
         await copyCurrentTabUrlWithFallback();
+    } else if (command === "toggleRail") {
+        await toggleRailFromShortcut();
     }
 });
+
+// Alt+S toggles the rail rather than the side panel, because the rail is the sidebar now.
+// The rail is a content script, so on a page where none can run - brave://, the Web Store,
+// a PDF - there is nothing to toggle. Fall back to the side panel there, which is the only
+// surface that works on those pages anyway, so the key never does nothing.
+async function toggleRailFromShortcut() {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab) return;
+
+    if (supportsContentScripts(tab.url)) {
+        try {
+            await chrome.tabs.sendMessage(tab.id, { action: 'railToggle' });
+            return;
+        } catch (error) {
+            // Loaded before the extension was, or still committing its first navigation.
+            try {
+                await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['rail/rail.js'] });
+                await chrome.tabs.sendMessage(tab.id, { action: 'railToggle' });
+                return;
+            } catch (injectionError) {
+                Logger.log('[Rail] Shortcut could not reach a rail in tab', tab.id, injectionError);
+            }
+        }
+    }
+
+    try {
+        await chrome.sidePanel.open({ windowId: tab.windowId });
+    } catch (error) {
+        Logger.log('[Rail] Shortcut fallback to side panel failed:', error);
+    }
+}
 
 // --- New tab placement -------------------------------------------------------
 //

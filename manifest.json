@@ -78,10 +78,13 @@
   },
   "commands": {
     "_execute_action": {
+      "description": "Toggle side panel (bind a key at the browser's shortcuts page)"
+    },
+    "toggleRail": {
       "suggested_key": {
         "default": "Alt+S"
       },
-      "description": "Toggle side panel"
+      "description": "Toggle the floating rail"
     },
     "quickPinToggle": {
       "suggested_key": {
